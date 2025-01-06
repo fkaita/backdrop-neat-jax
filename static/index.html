@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>NEAT + JAX Demo</title>
+  <!-- p5.js for drawing -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.5.0/lib/p5.min.js"></script>
+  <!-- jQuery for AJAX calls -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 0; }
+    #controls { margin: 8px; }
+    #messages { margin: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <button id="initBtn">Init Population</button>
+  <button id="forwardBtn">Forward (Genome 0)</button>
+  <button id="mutateBtn">Mutate (Genome 0)</button>
+  <button id="crossoverBtn">Crossover (0,1)</button>
+  <button id="evaluateBtn">Evaluate All</button>
+</div>
+<div id="messages"></div>
+
+<!-- We'll put a small p5.js canvas below -->
+<script>
+let canvasSize = 300;
+
+function setup() {
+  createCanvas(canvasSize, canvasSize);
+  background(240);
+  fill(0);
+  text("NEAT + JAX Demo", 10, 20);
+}
+
+function draw() {
+  // for now, we won't animate anything
+}
+
+// Use jQuery for AJAX
+$(document).ready(function() {
+
+  $("#initBtn").click(function(){
+    $.ajax({
+      url: "/init",
+      type: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        n_input: 2,
+        n_output: 1,
+        init_config: "all",
+        pop_size: 5
+      }),
+      success: function(resp){
+        $("#messages").append("INIT: " + JSON.stringify(resp) + "\n");
+      }
+    });
+  });
+
+  $("#forwardBtn").click(function(){
+    $.ajax({
+      url: "/forward",
+      type: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        genome_index: 0,
+        inputs: [[1.0, 2.0], [3.0, 4.0]]
+      }),
+      success: function(resp){
+        $("#messages").append("FORWARD: " + JSON.stringify(resp) + "\n");
+      }
+    });
+  });
+
+  $("#mutateBtn").click(function(){
+    $.ajax({
+      url: "/mutate",
+      type: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        genome_index: 0,
+        mutation_rate: 0.5,
+        mutation_scale: 0.2
+      }),
+      success: function(resp){
+        $("#messages").append("MUTATE: " + JSON.stringify(resp) + "\n");
+      }
+    });
+  });
+
+  $("#crossoverBtn").click(function(){
+    $.ajax({
+      url: "/crossover",
+      type: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        mom_index: 0,
+        dad_index: 1
+      }),
+      success: function(resp){
+        $("#messages").append("CROSSOVER: " + JSON.stringify(resp) + "\n");
+      }
+    });
+  });
+
+  $("#evaluateBtn").click(function(){
+    // Example: random data or just 2 samples
+    let inputData = [[1.0, 1.0],[2.0,3.0]];
+    let labels    = [1.0, 0.0];
+    $.ajax({
+      url: "/evaluate",
+      type: "POST",
+      contentType: "application/json",
+      data: JSON.stringify({
+        input_data: inputData,
+        labels: labels
+      }),
+      success: function(resp){
+        $("#messages").append("EVALUATE: " + JSON.stringify(resp) + "\n");
+      }
+    });
+  });
+
+});
+</script>
+
+</body>
+</html>
