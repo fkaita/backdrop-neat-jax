@@ -67,8 +67,19 @@ $(document).ready(function () {
     });
   }
 
+  // Function to generate background prediction grid
+  function generatePredictionGrid(xRange, yRange, resolution) {
+    const grid = [];
+    for (let x = xRange[0]; x <= xRange[1]; x += resolution) {
+      for (let y = yRange[0]; y <= yRange[1]; y += resolution) {
+        grid.push([x, y]);
+      }
+    }
+    return grid;
+  }
+
   // Function to plot the scatter plot
-  function plotScatter(data, predictions = null) {
+  function plotScatter(data, predictions = null, background = null) {
     const trainX = data.train_x;
     const trainLabels = data.train_label;
 
@@ -94,6 +105,19 @@ $(document).ready(function () {
     };
 
     const traces = [trace0, trace1];
+
+    // Add background gradation for model predictions
+    if (background) {
+      traces.push({
+        x: background.x,
+        y: background.y,
+        z: background.z,
+        type: 'contour',
+        colorscale: 'Viridis',
+        showscale: false,
+        name: 'Prediction Background',
+      });
+    }
 
     // If predictions are provided, add predicted classes to the plot
     if (predictions) {
@@ -130,9 +154,16 @@ $(document).ready(function () {
   // Fetch and display dataset when page loads
   fetchDataset('circle', 200, 0.5)
     .done(data => {
-      fetchNEATPredictions(data.train_x)
+      const grid = generatePredictionGrid([-6, 6], [-6, 6], 0.2);
+      fetchNEATPredictions(grid)
         .done(predictions => {
-          plotScatter(data, predictions.outputs);
+          const background = {
+            x: grid.map(p => p[0]),
+            y: grid.map(p => p[1]),
+            z: predictions.outputs.map(p => p[0]),
+          };
+
+          plotScatter(data, predictions.outputs, background);
 
           // Add backpropagation button functionality
           $('#backpropButton').on('click', function () {
@@ -142,7 +173,7 @@ $(document).ready(function () {
                 // Re-fetch predictions and update the plot
                 fetchNEATPredictions(data.train_x)
                   .done(newPredictions => {
-                    plotScatter(data, newPredictions.outputs);
+                    plotScatter(data, newPredictions.outputs, background);
                   });
               })
               .fail(err => {
