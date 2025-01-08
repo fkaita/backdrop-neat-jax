@@ -1,8 +1,9 @@
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scatter Plot</title>
+  <title>Scatter Plot with NEAT Classification</title>
   <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
@@ -20,6 +21,10 @@
         <a class="btn btn-primary btn-sm" id="customDataBlue">Blue Point</a>
         <a class="btn btn-success btn-sm" id="customDataSubmit">Submit Data</a>
       </div>
+
+      <div class="panel-body text-center">
+        <a class="btn btn-danger btn-sm" id="backpropButton">Run Backpropagation</a>
+      </div>
     </div>
   </div>
 </div>
@@ -36,8 +41,34 @@ $(document).ready(function () {
     });
   }
 
+  // Function to get NEAT model predictions
+  function fetchNEATPredictions(inputs) {
+    return $.ajax({
+      url: '/forward',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({ genome_index: 0, inputs }),
+    });
+  }
+
+  // Function to run backpropagation
+  function runBackprop(inputs, labels, nSteps = 100, learningRate = 0.05) {
+    return $.ajax({
+      url: '/backprop',
+      method: 'POST',
+      contentType: 'application/json',
+      data: JSON.stringify({
+        genome_index: 0,
+        inputs,
+        labels,
+        n_steps: nSteps,
+        lr: learningRate
+      }),
+    });
+  }
+
   // Function to plot the scatter plot
-  function plotScatter(data) {
+  function plotScatter(data, predictions = null) {
     const trainX = data.train_x;
     const trainLabels = data.train_label;
 
@@ -51,7 +82,7 @@ $(document).ready(function () {
       y: class0.map(point => point[1]),
       mode: 'markers',
       marker: { color: 'blue' },
-      name: 'Class 0',
+      name: 'Class 0 (True)',
     };
 
     const trace1 = {
@@ -59,23 +90,70 @@ $(document).ready(function () {
       y: class1.map(point => point[1]),
       mode: 'markers',
       marker: { color: 'orange' },
-      name: 'Class 1',
+      name: 'Class 1 (True)',
     };
 
+    const traces = [trace0, trace1];
+
+    // If predictions are provided, add predicted classes to the plot
+    if (predictions) {
+      const predClass0 = trainX.filter((_, i) => predictions[i][0] < 0.5);
+      const predClass1 = trainX.filter((_, i) => predictions[i][0] >= 0.5);
+
+      traces.push({
+        x: predClass0.map(point => point[0]),
+        y: predClass0.map(point => point[1]),
+        mode: 'markers',
+        marker: { color: 'green', symbol: 'x' },
+        name: 'Class 0 (Predicted)',
+      });
+
+      traces.push({
+        x: predClass1.map(point => point[0]),
+        y: predClass1.map(point => point[1]),
+        mode: 'markers',
+        marker: { color: 'red', symbol: 'x' },
+        name: 'Class 1 (Predicted)',
+      });
+    }
+
     const layout = {
-      title: 'Scatter Plot with Classification Classes',
+      title: 'Scatter Plot with NEAT Classification',
       xaxis: { title: 'X-axis' },
       yaxis: { title: 'Y-axis' },
     };
 
     // Render the plot
-    Plotly.newPlot('scatterPlot', [trace0, trace1], layout);
+    Plotly.newPlot('scatterPlot', traces, layout);
   }
 
   // Fetch and display dataset when page loads
   fetchDataset('circle', 200, 0.5)
     .done(data => {
-      plotScatter(data);
+      fetchNEATPredictions(data.train_x)
+        .done(predictions => {
+          plotScatter(data, predictions.outputs);
+
+          // Add backpropagation button functionality
+          $('#backpropButton').on('click', function () {
+            runBackprop(data.train_x, data.train_label)
+              .done(response => {
+                console.log(response.msg);
+                // Re-fetch predictions and update the plot
+                fetchNEATPredictions(data.train_x)
+                  .done(newPredictions => {
+                    plotScatter(data, newPredictions.outputs);
+                  });
+              })
+              .fail(err => {
+                console.error('Error running backpropagation:', err);
+              });
+          });
+        })
+        .fail(err => {
+          console.error('Error fetching predictions:', err);
+          plotScatter(data);
+        });
     })
     .fail(err => {
       console.error('Error fetching data:', err);
