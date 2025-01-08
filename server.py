@@ -5,6 +5,8 @@ from flask import Flask, request, jsonify, send_from_directory
 from jax import random
 import jax.numpy as jnp
 
+from dataset import generate_dataset
+
 # Import your neat.py
 from neat import (
     Genome,
@@ -185,6 +187,49 @@ def evaluate():
         fitnesses.append(fitness)
     # You might store them or do something else
     return jsonify({"fitnesses": fitnesses})
+
+
+@app.route("/generate_data", methods=["POST"])
+def generate_data():
+    """
+    JSON body example:
+      {
+        "type": "xor",  // or "spiral", "gaussian", "circle"
+        "train_size": 200,
+        "test_size": 100,
+        "noise": 0.5
+      }
+    Returns JSON like:
+      {
+        "train_x": [[x1,y1], [x2,y2], ...],
+        "train_label": [l1,l2,...],
+        "test_x": [...],
+        "test_label": [...]
+      }
+    """
+    req = request.get_json()
+    data_type = req.get("type", "circle")
+    train_size= req.get("train_size", 200)
+    test_size = req.get("test_size", 100)
+    noise     = req.get("noise", 0.5)
+
+    # generate train
+    x_train, y_train = generate_dataset(data_type, train_size, noise)
+    # generate test
+    x_test, y_test   = generate_dataset(data_type, test_size, noise)
+
+    # Convert to lists
+    x_train_list = x_train.tolist()
+    y_train_list = y_train.tolist()
+    x_test_list  = x_test.tolist()
+    y_test_list  = y_test.tolist()
+
+    return jsonify({
+      "train_x": x_train_list,
+      "train_label": y_train_list,
+      "test_x": x_test_list,
+      "test_label": y_test_list
+    })
 
 @app.route('/graph', methods=['POST'])
 def get_graph():
