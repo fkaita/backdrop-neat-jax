@@ -420,9 +420,8 @@ class Genome:
             "genome": self.connections,
             "description": description
         }
-        # Backup a copy of the genome if needed
-        self.backup = self.copy()
         return json.dumps(data)
+
 
     def fromJSON(self, data_string):
         data = json.loads(data_string)
@@ -646,10 +645,18 @@ class NEATTrainer:
     def getAllGenes(self):
         return self.genes + self.hallOfFame + self.bestOfSubPopulation
 
-    def applyFitnessFunc(self, f, clusterMode=True):
-        self.applyFitnessFuncToList(f, self.genes)
-        self.applyFitnessFuncToList(f, self.hallOfFame)
-        self.applyFitnessFuncToList(f, self.bestOfSubPopulation)
+    def applyFitnessFunc(self, fitness_func_code, clusterMode=True):
+        # Deserialize the fitness function (assumes it's Python code as a string)
+        local_context = {}
+        exec(fitness_func_code, globals(), local_context)
+        fitness_func = local_context.get("fitness_func")
+        if not fitness_func:
+            raise ValueError("Invalid fitness function provided.")
+
+        # Apply the fitness function
+        self.applyFitnessFuncToList(fitness_func, self.genes)
+        self.applyFitnessFuncToList(fitness_func, self.hallOfFame)
+        self.applyFitnessFuncToList(fitness_func, self.bestOfSubPopulation)
         self.filterFitness()
         combined = self.genes + self.hallOfFame + self.bestOfSubPopulation
         self.sortByFitness(combined)
@@ -664,6 +671,7 @@ class NEATTrainer:
                 if g.cluster == j:
                     self.bestOfSubPopulation.append(g.copy())
                     break
+
 
     def clipWeights(self, maxWeight_=50.0):
         for g in self.genes:
@@ -794,6 +802,11 @@ class NEATTrainer:
             if g.cluster == cluster:
                 return g
         return allGenes[0]
+    
+    # Add a helper method to convert the best genome to JSON
+    def getBestGenomeJSON(self, cluster=None):
+        best_genome = self.getBestGenome(cluster)
+        return best_genome.toJSON()
 
     def dist(self, g1, g2):
         g1.createUnrolledConnections()

@@ -113,20 +113,12 @@ def best_genome_api():
     global global_trainer
     if global_trainer is None:
         return jsonify({"error": "trainer not created"}), 400
-    best_genome = global_trainer.get_best_genome(cluster=cluster)
-    return jsonify({"best_genome": best_genome.to_json()})
+    best_genome_json = global_trainer.getBestGenomeJSON(cluster=cluster)
+    return jsonify({"best_genome": json.loads(best_genome_json)})
 
 
 @app.route("/apply_fitness", methods=["POST"])
 def apply_fitness():
-    """
-    Apply a fitness function configuration to the trainer.
-    Example JSON input:
-    {
-      "fitness_config": "<serialized fitness function>",
-      "cluster_mode": true
-    }
-    """
     global global_trainer
     if global_trainer is None:
         return jsonify({"error": "trainer not created"}), 400
@@ -138,11 +130,13 @@ def apply_fitness():
     if not fitness_config:
         return jsonify({"error": "fitness configuration is required"}), 400
 
-    # Assume fitness_config is a stringified function or some configuration to apply.
-    # If needed, parse or execute it here.
+    try:
+        global_trainer.applyFitnessFunc(fitness_config, cluster_mode)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
-    global_trainer.applyFitnessFunc(fitness_config, cluster_mode)
     return jsonify({"status": "fitness function applied"})
+
 
 
 @app.route("/forward", methods=["POST"])
