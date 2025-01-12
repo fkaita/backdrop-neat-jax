@@ -1,5 +1,34 @@
-// Define a global N object that “simulates” the original NEAT interface by calling backend API endpoints.
-var N = {};
+// Define or extend the global N object.
+var N = N || {};
+
+// Get all network parameters (nInput, nOutput, nodes, connections)
+N.getNetworkParameters = function() {
+  return fetch("/network", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" }
+  })
+  .then(response => response.json());
+};
+
+// Convenience method: get number of input nodes.
+N.getNumInput = function() {
+  return N.getNetworkParameters().then(data => data.nInput);
+};
+
+// Convenience method: get number of output nodes.
+N.getNumOutput = function() {
+  return N.getNetworkParameters().then(data => data.nOutput);
+};
+
+// Convenience method: get nodes list.
+N.getNodes = function() {
+  return N.getNetworkParameters().then(data => data.nodes);
+};
+
+// Convenience method: get connections list.
+N.getConnections = function() {
+  return N.getNetworkParameters().then(data => data.connections);
+};
 
 // Initialize the network (calls backend /init)
 N.init = function(options) {

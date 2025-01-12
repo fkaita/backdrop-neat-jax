@@ -346,12 +346,13 @@ var RenderGraph = {};
     return g;
   };
 
-  var getGenomeGraph = function(genome) {
-    var nInput = N.getNumInput();
-    var nOutput = N.getNumOutput();
-    var nodes = N.getNodes();
+  var getGenomeGraph = async function(genome) {
+    let netParams = await N.getNetworkParameters();
+    var nInput = netParams.nInput;
+    var nOutput = netParams.nOutput;
+    var nodes = netParams.nodes;
+    var connections = netParams.connections;
     var len = nodes.length;
-    var connections = N.getConnections();
     var i, n;
     var cIndex;
     var outIndex;

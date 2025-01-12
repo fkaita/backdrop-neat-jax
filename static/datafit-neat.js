@@ -339,16 +339,23 @@ function renderInfo(g) {
   }
 }
 
-function renderGraph(clusterNum_) {
+async function renderGraph(clusterNum_) {
   var genome;
   if (typeof clusterNum_ !== 'undefined') {
     genome = trainer.getBestGenome(clusterNum_);
   } else {
     genome = trainer.getBestGenome();
   }
-  colaGraph = RenderGraph.getGenomeGraph(genome);
-  renderInfo(genome);
-  RenderGraph.drawGraph(colaGraph);
+  try {
+    colaGraph = RenderGraph.getGenomeGraph(genome);
+    renderInfo(genome);
+    RenderGraph.drawGraph(colaGraph);
+  } catch (err) {
+    console.error("Error generating genome graph:", err);
+  }
+  // colaGraph = RenderGraph.getGenomeGraph(genome);
+  // renderInfo(genome);
+  // RenderGraph.drawGraph(colaGraph);
 }
 
 function setCluster(cluster) {
