@@ -436,85 +436,57 @@ class Genome:
         return data.get("description", "")
 
     def forward(self, input_values=None, weights=None):
-        """
-        A differentiable forward propagation routine.
-
-        Parameters:
-          input_values (optional): A JAX array of inputs for the input nodes.
-                                   If None, defaults to 0.5 for each input.
-          weights (optional): A JAX array of connection weights.
-                              If None, the method uses the weights stored in self.connections.
-
-        Returns:
-          A JAX array of outputs for the output nodes.
-        """
         nNodes = len(nodes)
-        # Convert the global nodes list into a JAX array.
         nodes_array = jnp.array(nodes)
-        # Identify indices for input, bias, and output nodes.
         input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT])
-        bias_indices  = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
+        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
         output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
 
-        # Use the provided weights or extract them from the genome.
         if weights is None:
-            weights = jnp.array([c[IDX_WEIGHT] for c in self.connections])
-        # Always convert the "active" flag into a JAX array.
-        active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections])
-        # Get the list of global connection indices from this genome.
-        conn_idx_list = [c[IDX_CONNECTION] for c in self.connections]
-        # Convert the global connections list to a JAX array.
-        global_conns = jnp.array(connections)  # shape: (total_connections, 2)
-        # Pick out only the rows that this genome uses.
-        selected = global_conns[conn_idx_list]  # shape: (# genome connections, 2)
-        from_indices = selected[:, 0].astype(jnp.int32)
-        to_indices   = selected[:, 1].astype(jnp.int32)
+            weights = jnp.array([c[IDX_WEIGHT] for c in self.connections], dtype=jnp.float32)
+        active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections], dtype=jnp.int32)
+        conn_idx_list = jnp.array([c[IDX_CONNECTION] for c in self.connections], dtype=jnp.int32)
+        global_conns = jnp.array(connections)
 
-        # Default input values if none provided.
+        selected = global_conns[conn_idx_list]
+        from_indices = selected[:, 0].astype(jnp.int32)
+        to_indices = selected[:, 1].astype(jnp.int32)
+
         if input_values is None:
-            input_values = jnp.array([0.5] * nInput)
-        # Initialize node values: use provided input_values for input nodes, bias nodes fixed at 1.0,
-        # and zeros for all other nodes.
-        node_vals = jnp.zeros(nNodes)
+            input_values = jnp.array([0.5] * nInput, dtype=jnp.float32)
+
+        node_vals = jnp.zeros(nNodes, dtype=jnp.float32)
         node_vals = node_vals.at[input_indices].set(input_values)
         node_vals = node_vals.at[bias_indices].set(1.0)
 
-        # Define a JAX-compatible update for one "tick" of propagation.
         def body_fn(t, nv):
-            # Each connection contributes its weight * active_mask * the value of its "from" node.
             contrib = weights * active_mask * nv[from_indices]
-            # Sum contributions per destination node.
-            summed = jax.ops.segment_sum(contrib, to_indices, nNodes)
-            # Apply the activation function for each node.
+            summed = jax.numpy.segment_sum(contrib, to_indices, nNodes)
+
             def apply_activation(i, x):
                 nt = nodes_array[i]
-                return jnp.where(
-                    nt == NODE_SIGMOID, GraphOps.sigmoid(x),
-                    jnp.where(
-                        nt == NODE_TANH, GraphOps.tanh(x),
-                        jnp.where(
-                            nt == NODE_RELU, GraphOps.relu(x),
-                            jnp.where(
-                                nt == NODE_GAUSSIAN, GraphOps.gaussian(x),
-                                jnp.where(
-                                    nt == NODE_SIN, GraphOps.sin(x),
-                                    jnp.where(
-                                        nt == NODE_MULT, GraphOps.mul(x),
-                                        jnp.where(nt == NODE_ADD, GraphOps.add(x), x)
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            # Vectorize the activation application over all nodes.
-            new_nv = jax.vmap(apply_activation)(jnp.arange(nNodes), summed)
-            return new_nv
+                if nt == NODE_SIGMOID:
+                    return GraphOps.sigmoid(x)
+                elif nt == NODE_TANH:
+                    return GraphOps.tanh(x)
+                elif nt == NODE_RELU:
+                    return GraphOps.relu(x)
+                elif nt == NODE_GAUSSIAN:
+                    return GraphOps.gaussian(x)
+                elif nt == NODE_SIN:
+                    return GraphOps.sin(x)
+                elif nt == NODE_MULT:
+                    return GraphOps.mul(x, x)
+                elif nt == NODE_ADD:
+                    return GraphOps.add(x, x)
+                else:
+                    return x
 
-        # Run a fixed number of update iterations.
+            return jax.vmap(apply_activation)(jnp.arange(nNodes), summed)
+
         final_vals = jax.lax.fori_loop(0, MAX_TICK, body_fn, node_vals)
-        # Return the outputs corresponding to the output nodes.
         return final_vals[output_indices]
+
 
     def backward(self, loss_fn, input_values=None):
         """
