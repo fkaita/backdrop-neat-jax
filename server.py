@@ -44,20 +44,32 @@ def init_network():
 @app.route("/network", methods=["GET"])
 def network_api():
     """
-    Returns current global network parameters.
+    Returns current global network parameters, including generation number.
     Output JSON structure:
       {
          "nInput": <nInput value>,
          "nOutput": <nOutput value>,
          "nodes": <list of nodes>,
-         "connections": <list of connections>
+         "connections": <list of connections>,
+         "generation": <current generation number>
       }
     """
+    global global_trainer
+    if global_trainer is None:
+        return jsonify({
+            "nInput": nInput,
+            "nOutput": nOutput,
+            "nodes": nodes,
+            "connections": connections,
+            "generation": 0  # Default to 0 if no trainer exists
+        })
+    
     return jsonify({
         "nInput": nInput,
         "nOutput": nOutput,
         "nodes": nodes,
-        "connections": connections
+        "connections": connections,
+        "generation": generationNum  # Include the current generation
     })
 
 

@@ -91,6 +91,16 @@ TrainerWrapper.prototype.evolve = function(mutateWeightsOnly = false) {
   }).then(response => response.json());
 };
 
+TrainerWrapper.prototype.getNumGeneration = function() {
+  // Fetch the current generation number from the backend (if supported).
+  return fetch("/network", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" }
+  })
+    .then(response => response.json())
+    .then(data => data.generation || 0); // Fallback to 0 if generation is not provided.
+};
+
 // -----------------------------
 // GenomeWrapper Class
 // -----------------------------
@@ -114,6 +124,42 @@ GenomeWrapper.prototype.copy = function() {
 
 GenomeWrapper.prototype.copyFrom = function(otherGenomeWrapper) {
   this.data = JSON.parse(JSON.stringify(otherGenomeWrapper.data));
+};
+
+GenomeWrapper.prototype.setupModel = function(size) {
+  // Setup the model; log or initialize any relevant parameters.
+  console.log("Setup model for size:", size);
+  // If backend initialization is required, trigger it here.
+};
+
+GenomeWrapper.prototype.setInput = function(inputData) {
+  // Set the input data; prepare this genome for forward propagation.
+  this.inputData = inputData; // Store the input data for subsequent operations.
+};
+
+GenomeWrapper.prototype.forward = function(graph) {
+  // Perform forward propagation via the backend.
+  return fetch("/forward", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      genome: this.data,
+      input_values: this.inputData // Use input data set earlier
+    })
+  })
+    .then(response => response.json())
+    .then(data => {
+      this.output = data.outputs; // Store the output for getOutput()
+      return data.outputs;
+    });
+};
+
+GenomeWrapper.prototype.getOutput = function() {
+  // Return the output generated during forward propagation.
+  if (!this.output) {
+    throw new Error("Output not available. Ensure forward() is called first.");
+  }
+  return this.output;
 };
 
 // -----------------------------

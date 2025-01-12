@@ -501,28 +501,33 @@ var fitnessFunc = async function (genome, _backpropMode, _nCycles) {
 function buildPredictionList(pList, thedata, thelabel, g, quantisation_) {
   "use strict";
   var i, n, y;
-  var G, output;
+  var output;
   var acc = 0;
-  var quantisation = (typeof quantisation_ === 'undefined') ? false : quantisation_;
+  var quantisation = (typeof quantisation_ === "undefined") ? false : quantisation_;
   n = particleList.length;
+
+  // Setup model and forward propagation
   g.setupModel(n);
   g.setInput(thedata);
-  G = new Graph(false);  // Assuming you now have your own Graph implementation
-  g.forward(G);
-  output = g.getOutput();
-  output[0] = G.sigmoid(output[0]);
-  for (i = 0; i < n; i++) {
-    y = output[0].w[i];
-    if (!quantisation) {
-      pList[i] = (y > 0.5) ? 1.0 : 0.0;
-      acc += Math.round(y) === thelabel.get(i, 0) ? 1 : 0;
-    } else {
-      pList[i] = y;
+
+  return g.forward().then(() => {
+    output = g.getOutput();
+
+    for (i = 0; i < n; i++) {
+      y = output[i];
+      if (!quantisation) {
+        pList[i] = (y > 0.5) ? 1.0 : 0.0;
+        acc += Math.round(y) === thelabel.get(i, 0) ? 1 : 0;
+      } else {
+        pList[i] = y;
+      }
     }
-  }
-  acc /= n;
-  return acc;
+
+    acc /= n;
+    return acc;
+  });
 }
+
 
 function draw() {
   var i, n;
