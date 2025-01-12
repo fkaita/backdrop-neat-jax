@@ -103,8 +103,23 @@ function GenomeWrapper(genomeData) {
 }
 
 GenomeWrapper.prototype.getNodesInUse = function() {
-  return this.data.nodes || [];
+  // Fetch the list of nodes in use. The backend should already return this data.
+  return this.data.nodes.filter((node, index) => {
+    // Check if any active connection involves this node.
+    return this.data.connections.some(conn => {
+      return conn.active && (conn.from === index || conn.to === index);
+    });
+  });
 };
+
+GenomeWrapper.prototype.setInput = function(inputData) {
+  // Set input data to be used for forward propagation.
+  if (!Array.isArray(inputData)) {
+    throw new Error("Input data must be an array.");
+  }
+  this.inputData = inputData; // Store the input data for use in forward propagation.
+};
+
 
 Object.defineProperty(GenomeWrapper.prototype, "connections", {
   get: function() {
@@ -120,16 +135,11 @@ GenomeWrapper.prototype.copyFrom = function(otherGenomeWrapper) {
   this.data = JSON.parse(JSON.stringify(otherGenomeWrapper.data));
 };
 
-GenomeWrapper.prototype.setupModel = function(size) {
-  // Setup the model; log or initialize any relevant parameters.
-  console.log("Setup model for size:", size);
-  // If backend initialization is required, trigger it here.
-};
-
-GenomeWrapper.prototype.setInput = function(inputData) {
-  // Set the input data; prepare this genome for forward propagation.
-  this.inputData = inputData; // Store the input data for subsequent operations.
-};
+// GenomeWrapper.prototype.setupModel = function(size) {
+//   // Setup the model; log or initialize any relevant parameters.
+//   console.log("Setup model for size:", size);
+//   // If backend initialization is required, trigger it here.
+// };
 
 GenomeWrapper.prototype.forward = function(graph) {
   // Perform forward propagation via the backend.
