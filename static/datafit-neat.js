@@ -507,7 +507,7 @@ function buildPredictionList(pList, thedata, thelabel, g, quantisation_) {
   n = particleList.length;
 
   // Setup model and forward propagation
-  g.setupModel(n);
+  // g.setupModel(n);
   g.setInput(thedata);
 
   return g.forward().then(() => {

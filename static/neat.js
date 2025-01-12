@@ -33,6 +33,10 @@ N.getConnections = function() {
   return N.getNetworkParameters().then(data => data.connections);
 };
 
+N.getNumGeneration = function() {
+  return N.getNetworkParameters().then(data => data.generation);
+}
+
 // Initialize the network (calls backend /init)
 N.init = function(options) {
   return fetch("/init", {
@@ -89,16 +93,6 @@ TrainerWrapper.prototype.evolve = function(mutateWeightsOnly = false) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mutateWeightsOnly: mutateWeightsOnly })
   }).then(response => response.json());
-};
-
-TrainerWrapper.prototype.getNumGeneration = function() {
-  // Fetch the current generation number from the backend (if supported).
-  return fetch("/network", {
-    method: "GET",
-    headers: { "Content-Type": "application/json" }
-  })
-    .then(response => response.json())
-    .then(data => data.generation || 0); // Fallback to 0 if generation is not provided.
 };
 
 // -----------------------------
