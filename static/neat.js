@@ -82,9 +82,24 @@ TrainerWrapper.prototype.getBestGenome = function(cluster) {
   if (typeof cluster !== "undefined") {
     url += `?cluster=${cluster}`;
   }
+
   return fetch(url, { method: "GET" })
-    .then(response => response.json())
-    .then(data => new GenomeWrapper(data.best_genome));
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to fetch best genome: ${response.status} ${response.statusText}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      if (!data.best_genome) {
+        throw new Error("Invalid response: Missing 'best_genome' key");
+      }
+      return new GenomeWrapper(data.best_genome);
+    })
+    .catch(error => {
+      console.error("Error in getBestGenome:", error);
+      throw error; // Re-throw so the caller can handle it
+    });
 };
 
 TrainerWrapper.prototype.evolve = function(mutateWeightsOnly = false) {
