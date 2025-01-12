@@ -1,433 +1,842 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+"""
+A Python conversion of a NEAT implementation using JAX.
+This code re-implements core functionality for Genome and NEATTrainer and
+starts a simple Flask server to interact with them.
+ 
+Reference: Original JavaScript version by David Ha (OToro Labs)
 
-import jax
-print(jax.devices())  
+NOTE: This is a proof-of-concept re‑implementation. Many details of the recurrent
+network propagation and clustering (k-medoids) have been simplified.
+"""
+
+import json
+import math
+import functools
+from flask import Flask, request, jsonify
 import jax.numpy as jnp
-from jax import random, jit
+from jax import random
+import jax  # for grad, jit, lax, etc.
+import numpy as np  # for some Python list copies
 
-######################################################
-# NODE TYPES & ACTIVATIONS
-######################################################
-# For simplicity, define a small set:
+# ---------------------------
+# Global random key management
+# ---------------------------
+global_key = random.PRNGKey(0)
+
+def randi(low, high):
+    global global_key
+    global_key, subkey = random.split(global_key)
+    return int(random.randint(subkey, shape=(), minval=low, maxval=high))
+
+def randn(mu, stdev):
+    global global_key
+    global_key, subkey = random.split(global_key)
+    return float(mu + stdev * random.normal(subkey, shape=()))
+
+def zeros(n):
+    return jnp.zeros(n)
+
+
+# ---------------------------
+# Global constants and variables
+# ---------------------------
+# Node type constants
 NODE_INPUT    = 0
 NODE_OUTPUT   = 1
 NODE_BIAS     = 2
-NODE_RELU     = 3
+NODE_SIGMOID  = 3
 NODE_TANH     = 4
+NODE_RELU     = 5
+NODE_GAUSSIAN = 6
+NODE_SIN      = 7
+NODE_COS      = 8
+NODE_ABS      = 9
+NODE_MULT     = 10
+NODE_ADD      = 11
+NODE_MGAUSSIAN= 12
+NODE_SQUARE   = 13
 
-# Map node-type -> activation function
-def activate(node_type, x):
-    """
-    node_type is a JAX integer tracer. We use lax.switch to do 
-    a 'switch'-like operation: node_type picks which function to call.
-    We'll define the function index as:
-      0 -> (NODE_INPUT)
-      1 -> (NODE_OUTPUT)
-      2 -> (NODE_BIAS)
-      3 -> (NODE_RELU)
-      4 -> (NODE_TANH)
-    But you must make sure node_type is in [0..4].
-    """
-    def f_input(x):  return x  # pass-through
-    def f_output(x): return x
-    def f_bias(x):   return x
-    def f_relu(x):   return jnp.maximum(0, x)
-    def f_tanh(x):   return jnp.tanh(x)
+# For connections:
+IDX_CONNECTION = 0
+IDX_WEIGHT     = 1
+IDX_ACTIVE     = 2
 
-    # define a tuple of possible “cases”:
-    branches = (f_input, f_output, f_bias, f_relu, f_tanh)
+MAX_TICK = 100
 
-    # use jax.lax.switch(index, branches, operand)
-    return jax.lax.switch(node_type, branches, x)
-######################################################
-# GENOME DEFINITION
-######################################################
-# We store everything inside a Python dataclass or dictionary.
-# Let’s use a namedtuple or dataclass for clarity.
+# Operator mapping – names refer to functions implemented below
+operators = [None, None, None, 'sigmoid', 'tanh', 'relu', 'gaussian', 'sin', 'cos', 'abs', 'mult', 'add', 'mult', 'add']
 
-from typing import NamedTuple
+# initial configuration for connectivity ("none", "one", or "all")
+initConfig = "none"
 
-class Genome(NamedTuple):
-    """
-    node_types: jnp.int32 array [n_nodes]. E.g. [0,0,2,1,1,...]
-      (some inputs, 1 bias, then some outputs, maybe hidden nodes).
-    connections: jnp.int32 array [n_connections, 2].
-      Each row: [from_node, to_node].
-    weights: jnp.float32 array [n_connections].
-      Each entry is the weight for that connection.
-    active: jnp.int32 array [n_connections].
-      1 if active, 0 if disabled.
-    """
-    node_types:   jnp.ndarray
-    connections:  jnp.ndarray
-    weights:      jnp.ndarray
-    active:       jnp.ndarray
+# Activation sets
+activations_default = [NODE_SIGMOID, NODE_TANH, NODE_RELU, NODE_GAUSSIAN, NODE_SIN, NODE_MULT, NODE_ADD] 
+activations_all = [NODE_SIGMOID, NODE_TANH, NODE_RELU, NODE_GAUSSIAN, NODE_SIN, NODE_COS, NODE_MULT, NODE_ABS, NODE_ADD, NODE_MGAUSSIAN, NODE_SQUARE]
+activations_minimal = [NODE_RELU, NODE_TANH, NODE_GAUSSIAN, NODE_ADD]
+activations = activations_default
 
-######################################################
-# INITIALIZATION
-######################################################
-def init_genome(rng, n_input, n_output, init_config="none"):
-    """
-    Create a simple genome with:
-      - node_types: input nodes, 1 bias node, output nodes (no hidden nodes).
-      - connections: possibly none, or fully connected, etc.
-    """
-    # 1) Build node_types
-    # Example: first n_input => input nodes, then 1 => bias, then n_output => output
-    node_types = [NODE_INPUT]*n_input + [NODE_BIAS] + [NODE_OUTPUT]*n_output
-    node_types = jnp.array(node_types, dtype=jnp.int32)
+def getRandomActivation():
+    ix = randi(0, len(activations))
+    return activations[ix]
 
-    # 2) Build connections, weights, active
+gid = 0
+def getGID():
+    global gid
+    result = gid
+    gid += 1
+    return result
+
+# Global containers (these mimic the globals in the JS version)
+nodes = []         # list of node types, e.g. NODE_INPUT, NODE_OUTPUT, etc.
+connections = []   # global list of connections (each is a list: [from_node, to_node])
+
+def copyArray(x):
+    return x.copy()
+
+def copyConnections(newC):
+    # returns a copy of the connections (only first two elements per connection)
+    return [[c[0], c[1]] for c in newC]
+
+def getNodes():
+    return copyArray(nodes)
+
+def getConnections():
+    return copyConnections(connections)
+
+# Global network configuration variables
+nInput  = 1
+nOutput = 1
+outputIndex = 2   # (bias, then inputs, then outputs)
+generationNum = 0
+
+def incrementGenerationCounter():
+    global generationNum
+    generationNum += 1
+
+# Simple render mode functions (for display in the original code)
+def getRandomRenderMode():
+    z = randi(0, 6)
+    if z < 3:
+        return 0
+    if z < 5:
+        return 1
+    return 2
+
+renderMode = getRandomRenderMode()
+
+def randomizeRenderMode():
+    global renderMode
+    renderMode = getRandomRenderMode()
+    print(f'render mode = {renderMode}')
+
+def setRenderMode(rMode):
+    global renderMode
+    renderMode = rMode
+
+def getRenderMode():
+    return renderMode
+
+def getOption(opt, key, default):
+    if opt and key in opt:
+        return opt[key]
+    return default
+
+def init(opt=None):
+    """Initializes the global network variables."""
+    global nInput, nOutput, initConfig, nodes, connections, outputIndex, generationNum, activations
+    opt = opt or {}
+    nInput  = getOption(opt, 'nInput', nInput)
+    nOutput = getOption(opt, 'nOutput', nOutput)
+    initConfig = getOption(opt, 'initConfig', initConfig)
+    if 'activations' in opt:
+        if opt['activations'] == "all":
+            activations = activations_all
+        elif opt['activations'] == "minimal":
+            activations = activations_minimal
+    outputIndex = nInput + 1  # index for first output (after bias and inputs)
+    nodes = []
     connections = []
-    weights     = []
-    active      = []
+    generationNum = 0
+    # initialize nodes: inputs then bias then outputs
+    for i in range(nInput):
+        nodes.append(NODE_INPUT)
+    nodes.append(NODE_BIAS)
+    for i in range(nOutput):
+        nodes.append(NODE_OUTPUT)
+    # initialize connections – by default connect inputs to outputs if config is "all"
+    if initConfig == "all":
+        for j in range(nOutput):
+            for i in range(nInput+1):
+                connections.append([i, outputIndex+j])
+    elif initConfig == "one":
+        # add a dummy hidden node
+        nodes.append(NODE_ADD)
+        dummyIndex = len(nodes) - 1
+        for i in range(nInput+1):
+            connections.append([i, dummyIndex])
+        for i in range(nOutput):
+            connections.append([dummyIndex, outputIndex+i])
+    # (for "none", no connections are added globally)
 
-    if init_config == "all":
-        # fully connect input+bias to all outputs
-        for i in range(n_input + 1):
-            for j in range(n_output):
-                from_idx = i
-                to_idx   = n_input + 1 + j  # because outputs start after the bias
-                connections.append([from_idx, to_idx])
-                # random normal weight
-                w = random.normal(rng, (1,)) * 1.0
-                weights.append(w[0])
-                active.append(1)
-    elif init_config == "one":
-        # connect only one hidden node, for illustration
-        # but let's keep it minimal: just connect bias -> first output
-        bias_idx   = n_input
-        out0_idx   = n_input + 1  # first output
-        connections.append([bias_idx, out0_idx])
-        w = random.normal(rng, (1,)) * 1.0
-        weights.append(w[0])
-        active.append(1)
-    # else "none" => empty
+# ---------------------------
+# Simple neural operations (using JAX)
+# ---------------------------
+class GraphOps:
+    """A set of operations that mimic the recurrent.js operations."""
+    
+    @staticmethod
+    def mul(a, b):
+        # elementwise multiplication (assume a and b are scalars or 1-element arrays)
+        return a * b
 
-    if len(connections) == 0:
-        connections_array = jnp.zeros((0,2), dtype=jnp.int32)
-        weights_array     = jnp.zeros((0,),  dtype=jnp.float32)
-        active_array      = jnp.zeros((0,),  dtype=jnp.int32)
-    else:
-        connections_array = jnp.array(connections, dtype=jnp.int32)
-        weights_array     = jnp.array(weights,     dtype=jnp.float32)
-        active_array      = jnp.array(active,      dtype=jnp.int32)
+    @staticmethod
+    def add(a, b):
+        return a + b
 
-    return Genome(
-        node_types=node_types,
-        connections=connections_array,
-        weights=weights_array,
-        active=active_array
-    )
+    @staticmethod
+    def eltmul(a, b):
+        # elementwise multiplication (identical to mul in our scalar case)
+        return a * b
 
-######################################################
-# FORWARD PASS
-######################################################
-def forward(genome: Genome, inputs: jnp.ndarray):
-    """
-    - Suppose inputs is shape [n_input] or [batch_size, n_input].
-    - We do a naive "tick" approach:
-        1) node_outputs[i] = 0 for all i initially,
-        2) place the 'inputs' in the input nodes,
-        3) place bias=1.0 in the bias node,
-        4) repeatedly propagate signals in topological order,
-           or just do a fixed iteration if we assume no cycles.
-      For a *real* NEAT approach, you'd do a topological sort
-      or BFS to handle hidden nodes in order.
-    Here, we keep it extremely simplified and assume no hidden
-    cycles. We do enough ticks to let signals flow from input
-    to output.
-    """
-    n_nodes = genome.node_types.shape[0]
+    @staticmethod
+    def sigmoid(x):
+        return 1 / (1 + jnp.exp(-x))
 
-    # If inputs is 1D, reshape it to [1, n_input] so batch logic is simpler
-    if inputs.ndim == 1:
-        inputs = inputs[None, :]  # [1, n_input]
-    batch_size = inputs.shape[0]
+    @staticmethod
+    def tanh(x):
+        return jnp.tanh(x)
 
-    # We'll store node activations in a [batch_size, n_nodes] array
-    node_vals = jnp.zeros((batch_size, n_nodes), dtype=jnp.float32)
+    @staticmethod
+    def relu(x):
+        return jnp.maximum(0, x)
 
-    n_input  = jnp.sum(genome.node_types == NODE_INPUT)
-    bias_idx = n_input            # if we assume the bias is right after the inputs
-    # place input and bias
-    def place_io(node_vals):
-        # slice assignment in JAX requires fancy indexing or use of scatter
-        # simpler approach: build an array with them set
-        node_vals = node_vals.at[:, :n_input].set(inputs)  # place inputs
-        node_vals = node_vals.at[:, bias_idx].set(1.0)     # place bias
-        return node_vals
+    @staticmethod
+    def gaussian(x):
+        return jnp.exp(-x*x)
 
-    node_vals = place_io(node_vals)
+    @staticmethod
+    def sin(x):
+        return jnp.sin(x)
 
-    # We can do multiple “ticks” to allow signals to propagate
-    # (in real NEAT code, we do a topological pass)
-    def one_tick(node_vals):
-        # For each connection, do:
-        #   node_vals[to] += node_vals[from] * weight
-        # Then apply activation for each node
-        from_nodes = genome.connections[:, 0]  # shape [n_connections]
-        to_nodes   = genome.connections[:, 1]  # shape [n_connections]
-        w          = genome.weights            # shape [n_connections]
-        actv       = genome.active            # shape [n_connections]
+    @staticmethod
+    def cos(x):
+        return jnp.cos(x)
 
-        # We'll accumulate contributions in a buffer, then add to node_vals
-        contrib_buffer = jnp.zeros_like(node_vals)  # [batch, n_nodes]
+    @staticmethod
+    def abs(x):
+        return jnp.abs(x)
 
-        # Vectorized approach:
-        #   For each connection c, let from_nodes[c] be f,
-        #   to_nodes[c] be t, and weight w[c].
-        #   Then add node_vals[:, f] * w[c] to contrib_buffer[:, t].
-        # Because we can't do arbitrary scatter easily in pure jnp
-        # with direct indexing, we can use `jax.ops.segment_sum` or
-        # `scatter_add`. We'll do a manual approach:
-
-        def body_fun(i, buf):
-            # connection i
-            f = from_nodes[i]
-            t = to_nodes[i]
-            aw= actv[i] * w[i]
-            # add contribution to buf[:, t]
-            contribution = node_vals[:, f] * aw
-            return buf.at[:, t].add(contribution)
-
-        contrib_buffer = jax.lax.fori_loop(0, genome.connections.shape[0], body_fun, contrib_buffer)
-
-        # Add the contributions
-        new_vals = node_vals + contrib_buffer
-
-        # Now apply activation per node
-        # We can do it in a vectorized way as well:
-        def apply_node_activation(i, new_vals):
-            nt = genome.node_types[i]
-            return new_vals.at[:, i].set(activate(nt, new_vals[:, i]))
-
-        new_vals = jax.lax.fori_loop(0, n_nodes, apply_node_activation, new_vals)
-        return new_vals
-
-    # We do a few ticks:
-    for _ in range(3):
-        node_vals = one_tick(node_vals)
-
-    # Finally extract the output(s).
-    # Let's say all nodes with node_type == NODE_OUTPUT are outputs:
-    out_mask = (genome.node_types == NODE_OUTPUT)
-    # we can gather them:
-    output_nodes = jnp.where(out_mask)[0]  # indices of outputs
-    # shape = [batch_size, #outputs]
-    output_vals = node_vals[:, output_nodes]
-    return output_vals
-
-######################################################
-# BACKPROP FUNCTION
-######################################################
-def backprop_genome(rng,
-                    genome: Genome,
-                    inputs: jnp.ndarray,
-                    labels: jnp.ndarray,
-                    n_steps: int=1,
-                    lr: float=0.01):
-    """
-    Perform 'n_steps' of gradient descent on 'genome.weights'
-    to minimize MSE between forward(genome, inputs) and labels.
-    We'll assume shape of inputs=[batch, n_input], labels=[batch, n_output].
-    """
-    # 1) define a loss function that depends on 'weights'
-    #    We'll copy 'genome' but swap in the candidate weights.
-    def genome_loss(weights, inputs, labels, genome):
-        # build a "temporary" genome with these weights
-        tmp_genome = genome._replace(weights=weights)
-        preds = forward(tmp_genome, inputs)  # shape [batch, n_output]
-        # for MSE:
-        # ensure labels matches shape [batch, n_output]
-        if labels.ndim == 1:
-            # expand to [batch,1]
-            labels_2d = labels[:, None]
+# ---------------------------
+# Genome class
+# ---------------------------
+class Genome:
+    def __init__(self, initGenome=None):
+        self.connections = []  # local copy of (global) connections; each is [innovation, weight, active]
+        # If an initial genome is provided, copy its connections.
+        if initGenome is not None and hasattr(initGenome, 'connections'):
+            for c in initGenome.connections:
+                self.connections.append(c.copy())
         else:
-            labels_2d = labels
-        mse = jnp.mean((preds - labels_2d)**2)
-        return mse
+            # Initialize based on global initConfig
+            if initConfig == "all":
+                for i in range((nInput+1)*nOutput):
+                    # create a connection using a list of three values
+                    c = [i, randn(0.0, 1.0), 1]
+                    self.connections.append(c)
+            elif initConfig == "one":
+                total = (nInput+1) + nOutput
+                for i in range(total):
+                    c = [i, randn(0.0, 1.0) if i < (nInput+1) else 1.0, 1]
+                    self.connections.append(c)
+        self.fitness = -1e20
+        self.cluster = 0
+        self.unrolledConnections = None  # will be created later
 
-    # 2) get gradient w.r.t. 'weights'
-    grad_loss = jax.grad(genome_loss, argnums=0)
+    def copy(self):
+        g = Genome(self)
+        g.fitness = self.fitness
+        g.cluster = self.cluster
+        return g
 
-    # 3) do n_steps of gradient descent
-    new_weights = genome.weights
-    for _ in range(n_steps):
-        g = grad_loss(new_weights, inputs, labels, genome)
-        new_weights = new_weights - lr * g
-
-    # 4) return updated genome
-    return genome._replace(weights=new_weights)
-
-######################################################
-# MUTATION
-######################################################
-def mutate_genome(rng, genome: Genome, mutation_rate=0.2, mutation_scale=0.5):
-    """
-    - With probability mutation_rate, perturb each weight
-      by a normal(0, mutation_scale).
-    - Potentially also add new connections or new nodes, etc.
-      (We keep it minimal for illustration.)
-    """
-    # 1) mutate weights
-    key1, rng = random.split(rng)
-    do_perturb = random.uniform(key1, shape=genome.weights.shape) < mutation_rate
-
-    key2, rng = random.split(rng)
-    deltas = random.normal(key2, shape=genome.weights.shape) * mutation_scale
-
-    new_weights = jnp.where(do_perturb, genome.weights + deltas, genome.weights)
-
-    # 2) optionally add more advanced mutations (new node, new connection) ...
-    #   for brevity, we skip that.
-
-    return genome._replace(weights=new_weights)
-
-######################################################
-# CROSSOVER
-######################################################
-def crossover(rng, mom: Genome, dad: Genome):
-    """
-    Simple 1-to-1 “aligned” crossover for demonstration:
-    - We assume mom.connections == dad.connections (same shape).
-    - For each weight, 50% chance to come from mom or dad.
-    If their topologies differ, you'd need more complex logic.
-    """
-    # For simplicity, we just check shapes are the same:
-    if mom.connections.shape != dad.connections.shape:
-        # real NEAT code does fancy matching by global innovation IDs,
-        # we skip that here. We'll just return a copy of mom if mismatched
-        return mom
-
-    # choose from mom or dad
-    key1, rng = random.split(rng)
-    mask = random.bernoulli(key1, 0.5, shape=mom.weights.shape)
-    new_weights = jnp.where(mask, mom.weights, dad.weights)
-
-    # If they differ in “active”, do a similar approach or logical OR, etc.
-    # Here, we do a simple approach: if both active => active,
-    # else if one is active => 50% chance:
-    both_active = jnp.logical_and(mom.active == 1, dad.active == 1)
-    either_active = jnp.logical_or(mom.active == 1, dad.active == 1)
-    key2, rng = random.split(rng)
-    coin_flip = random.bernoulli(key2, 0.5, shape=mom.active.shape)
-    new_active = jnp.where(
-        both_active,
-        1,
-        jnp.where(either_active, coin_flip, 0)
-    )
-
-    return mom._replace(
-        weights=new_weights,
-        active=new_active
-    )
-
-
-def genome_to_rendergraph(genome: Genome, n_input: int, n_output: int):
-    """
-    Convert a Python 'Genome' into the JSON structure that
-    RenderGraph.drawGraph() expects.
+    def importConnections(self, cArray):
+        self.connections = []
+        for c in cArray:
+            self.connections.append([c[0], c[1], c[2]])
     
-    We'll build .nodes and .links, plus some constraints for alignment.
-    """
-    # 1) Mark all nodes as "active=1" for now (unless you want logic that disables certain nodes).
-    n_nodes = genome.node_types.shape[0]
-    # Build node objects: "name" (the type int), "active": 1
-    # Because the RenderGraph code expects node.name to be an integer that indexes
-    # into color tables (like 0=input, 1=output, 2=bias, etc.).
-    node_list = []
-    for i in range(n_nodes):
-        # e.g. "name": node_type, "active": 1
-        node_obj = {
-            "name": int(genome.node_types[i]),
-            "active": 1
+    def copyFrom(self, sourceGenome):
+        self.importConnections(sourceGenome.connections)
+        self.fitness = sourceGenome.fitness
+        self.cluster = sourceGenome.cluster
+
+    def mutateWeights(self, mutationRate_=None, mutationSize_=None):
+        mRate = mutationRate_ if mutationRate_ is not None else 0.2
+        mSize = mutationSize_ if mutationSize_ is not None else 0.5
+        for i in range(len(self.connections)):
+            if np.random.rand() < mRate:
+                self.connections[i][IDX_WEIGHT] += randn(0, mSize)
+
+    def areWeightsNaN(self):
+        for c in self.connections:
+            if math.isnan(c[IDX_WEIGHT]):
+                return True
+        return False
+
+    def clipWeights(self, maxWeight_=50.0):
+        maxW = abs(maxWeight_)
+        for i in range(len(self.connections)):
+            w = self.connections[i][IDX_WEIGHT]
+            assert not math.isnan(w), "weight had NaN."
+            w = min(maxW, w)
+            w = max(-maxW, w)
+            self.connections[i][IDX_WEIGHT] = w
+
+    def getAllConnections(self):
+        return connections
+
+    def addRandomNode(self):
+        if len(self.connections) == 0:
+            return
+        c_index = randi(0, len(self.connections))
+        # Only proceed if chosen connection is active.
+        if self.connections[c_index][IDX_ACTIVE] != 1:
+            return
+        w = self.connections[c_index][IDX_WEIGHT]
+        self.connections[c_index][IDX_ACTIVE] = 0  # disable that connection
+        nodeIndex = len(nodes)
+        # add a new node with a random activation type
+        nodes.append(getRandomActivation())
+        # use the global connection indexed by innovation number (assume innovation equals same index)
+        innovationNum = self.connections[c_index][IDX_CONNECTION]
+        fromNodeIndex = connections[innovationNum][0]
+        toNodeIndex = connections[innovationNum][1]
+        connectionIndex = len(connections)
+        # add two new global connections
+        connections.append([fromNodeIndex, nodeIndex])
+        connections.append([nodeIndex, toNodeIndex])
+        # add local connections for this genome
+        c1 = [connectionIndex, 1.0, 1]
+        c2 = [connectionIndex+1, w, 1]
+        self.connections.append(c1)
+        self.connections.append(c2)
+
+    def getNodesInUse(self):
+        nNodes = len(nodes)
+        nodesInUseFlag = [0] * nNodes
+        for c in self.connections:
+            global_innov = c[IDX_CONNECTION]
+            from_idx, to_idx = connections[global_innov]
+            nodesInUseFlag[from_idx] = 1
+            nodesInUseFlag[to_idx] = 1
+        nodesInUse = []
+        for i in range(nNodes):
+            # always include input, bias, output nodes (first nInput+1+nOutput)
+            if nodesInUseFlag[i] == 1 or (i < nInput+1+nOutput):
+                nodesInUse.append(i)
+        return nodesInUse
+
+    def addRandomConnection(self):
+        nodesInUse = self.getNodesInUse()
+        if len(nodesInUse) == 0:
+            return
+        # choose two different nodes (avoid output-to-output if possible)
+        # (This is a simplified version compared to the original code.)
+        fromNodeIndex = nodesInUse[randi(0, len(nodesInUse))]
+        toNodeIndex = nodesInUse[randi(0, len(nodesInUse))]
+        if fromNodeIndex == toNodeIndex:
+            return
+        # Check if connection already exists globally
+        searchIndex = -1
+        for i, con in enumerate(connections):
+            if con[0] == fromNodeIndex and con[1] == toNodeIndex:
+                searchIndex = i
+                break
+        if searchIndex < 0:
+            connectionIndex = len(connections)
+            connections.append([fromNodeIndex, toNodeIndex])
+            c = [connectionIndex, randn(0.0, 1.0), 1]
+            self.connections.append(c)
+        else:
+            # if it exists, enable it if it is not already in this genome.
+            found = False
+            for c in self.connections:
+                if c[IDX_CONNECTION] == searchIndex:
+                    if c[IDX_ACTIVE] == 0:
+                        c[IDX_WEIGHT] = randn(0.0, 1.0)
+                        c[IDX_ACTIVE] = 1
+                    found = True
+                    break
+            if not found:
+                c1 = [searchIndex, randn(0.0, 1.0), 1]
+                self.connections.append(c1)
+
+    def createUnrolledConnections(self):
+        total = len(connections)
+        self.unrolledConnections = [[0, 0.0, 0] for _ in range(total)]
+        for c in self.connections:
+            cIndex = c[IDX_CONNECTION]
+            self.unrolledConnections[cIndex] = c.copy()
+
+    def crossover(self, other):
+        # Create an offspring genome by combining self and other.
+        self.createUnrolledConnections()
+        other.createUnrolledConnections()
+        child = Genome()
+        child.connections = []
+        total = len(connections)
+        for i in range(total):
+            count = 0
+            g = self
+            if self.unrolledConnections[i][IDX_CONNECTION] == 1:
+                count += 1
+            if other.unrolledConnections[i][IDX_CONNECTION] == 1:
+                g = other
+                count += 1
+            if count == 2 and np.random.rand() < 0.5:
+                g = self
+            if count == 0:
+                continue
+            c = [i, g.unrolledConnections[i][IDX_WEIGHT], 1]
+            if (self.unrolledConnections[i][IDX_ACTIVE] == 0 and
+                other.unrolledConnections[i][IDX_ACTIVE] == 0):
+                c[IDX_ACTIVE] = 0
+            child.connections.append(c)
+        return child
+
+    def roundWeights(self):
+        precision = 10000
+        for i in range(len(self.connections)):
+            w = self.connections[i][IDX_WEIGHT]
+            self.connections[i][IDX_WEIGHT] = round(w*precision)/precision
+
+    def toJSON(self, description=""):
+        data = {
+            "nodes": copyArray(nodes),
+            "connections": copyConnections(connections),
+            "nInput": nInput,
+            "nOutput": nOutput,
+            "renderMode": renderMode,
+            "outputIndex": outputIndex,
+            "genome": self.connections,
+            "description": description
         }
-        node_list.append(node_obj)
+        # Backup a copy of the genome if needed
+        self.backup = self.copy()
+        return json.dumps(data)
+
+    def fromJSON(self, data_string):
+        data = json.loads(data_string)
+        global nodes, connections, nInput, nOutput, renderMode, outputIndex
+        nodes = data["nodes"].copy()
+        connections = copyConnections(data["connections"])
+        nInput = data["nInput"]
+        nOutput = data["nOutput"]
+        renderMode = data.get("renderMode", 0)
+        outputIndex = data["outputIndex"]
+        self.importConnections(data["genome"])
+        return data.get("description", "")
+
+    def forward(self, input_values=None, weights=None):
+        """
+        A differentiable forward propagation routine.
+
+        Parameters:
+          input_values (optional): A JAX array of inputs for the input nodes.
+                                   If None, defaults to 0.5 for each input.
+          weights (optional): A JAX array of connection weights.
+                              If None, the method uses the weights stored in self.connections.
+
+        Returns:
+          A JAX array of outputs for the output nodes.
+        """
+        nNodes = len(nodes)
+        # Convert the global nodes list into a JAX array.
+        nodes_array = jnp.array(nodes)
+        # Identify indices for input, bias, and output nodes.
+        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT])
+        bias_indices  = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
+        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
+
+        # Use the provided weights or extract them from the genome.
+        if weights is None:
+            weights = jnp.array([c[IDX_WEIGHT] for c in self.connections])
+        # Always convert the "active" flag into a JAX array.
+        active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections])
+        # Get the list of global connection indices from this genome.
+        conn_idx_list = [c[IDX_CONNECTION] for c in self.connections]
+        # Convert the global connections list to a JAX array.
+        global_conns = jnp.array(connections)  # shape: (total_connections, 2)
+        # Pick out only the rows that this genome uses.
+        selected = global_conns[conn_idx_list]  # shape: (# genome connections, 2)
+        from_indices = selected[:, 0].astype(jnp.int32)
+        to_indices   = selected[:, 1].astype(jnp.int32)
+
+        # Default input values if none provided.
+        if input_values is None:
+            input_values = jnp.array([0.5] * nInput)
+        # Initialize node values: use provided input_values for input nodes, bias nodes fixed at 1.0,
+        # and zeros for all other nodes.
+        node_vals = jnp.zeros(nNodes)
+        node_vals = node_vals.at[input_indices].set(input_values)
+        node_vals = node_vals.at[bias_indices].set(1.0)
+
+        # Define a JAX-compatible update for one "tick" of propagation.
+        def body_fn(t, nv):
+            # Each connection contributes its weight * active_mask * the value of its "from" node.
+            contrib = weights * active_mask * nv[from_indices]
+            # Sum contributions per destination node.
+            summed = jax.ops.segment_sum(contrib, to_indices, nNodes)
+            # Apply the activation function for each node.
+            def apply_activation(i, x):
+                nt = nodes_array[i]
+                return jnp.where(
+                    nt == NODE_SIGMOID, GraphOps.sigmoid(x),
+                    jnp.where(
+                        nt == NODE_TANH, GraphOps.tanh(x),
+                        jnp.where(
+                            nt == NODE_RELU, GraphOps.relu(x),
+                            jnp.where(
+                                nt == NODE_GAUSSIAN, GraphOps.gaussian(x),
+                                jnp.where(
+                                    nt == NODE_SIN, GraphOps.sin(x),
+                                    jnp.where(
+                                        nt == NODE_MULT, GraphOps.mul(x),
+                                        jnp.where(nt == NODE_ADD, GraphOps.add(x), x)
+                                    )
+                                )
+                            )
+                        )
+                    )
+                )
+            # Vectorize the activation application over all nodes.
+            new_nv = jax.vmap(apply_activation)(jnp.arange(nNodes), summed)
+            return new_nv
+
+        # Run a fixed number of update iterations.
+        final_vals = jax.lax.fori_loop(0, MAX_TICK, body_fn, node_vals)
+        # Return the outputs corresponding to the output nodes.
+        return final_vals[output_indices]
+
+    def backward(self, loss_fn, input_values=None):
+        """
+        Computes the gradient of a scalar loss with respect to the genome's connection weights.
+        
+        Parameters:
+          loss_fn    : A function that accepts the network outputs (a JAX array)
+                       and returns a scalar loss.
+          input_values (optional): A JAX array to use as inputs (default is 0.5 for each input).
+        
+        Returns:
+          loss_val    : The scalar loss computed using the current weights.
+          grad_weights: A JAX array of gradients with respect to each connection weight.
+        """
+        # Extract the initial weights from the genome.
+        weights_init = jnp.array([c[IDX_WEIGHT] for c in self.connections])
+        # Define a loss function that calls the (differentiable) forward method.
+        # The forward method accepts an optional weight vector.
+        loss_from_weights = lambda w: loss_fn(self.forward(input_values=input_values, weights=w))
+        # Compute the gradient of the loss with respect to the weights.
+        grad_weights = jax.grad(loss_from_weights)(weights_init)
+        # Also compute the current loss.
+        loss_val = loss_from_weights(weights_init)
+        return loss_val, grad_weights
+
+# ---------------------------
+# A simple k-medoid clustering stub
+# ---------------------------
+class KMedoids:
+    def __init__(self):
+        self.K = 0
+        self.dist_func = None
+        self.clusters = None
+
+    def init(self, K):
+        self.K = K
+
+    def setDistFunction(self, f):
+        self.dist_func = f
+
+    def partition(self, gene_list):
+        # A simple (and not very efficient) clustering: assign genes round-robin.
+        K = self.K if self.K > 0 else 1
+        self.clusters = [[] for _ in range(K)]
+        for idx, gene in enumerate(gene_list):
+            self.clusters[idx % K].append(idx)
+
+    def getCluster(self):
+        return self.clusters if self.clusters is not None else []
+
+# ---------------------------
+# NEATTrainer class
+# ---------------------------
+class NEATTrainer:
+    def __init__(self, options=None, initGenome=None):
+        opts = options or {}
+        self.num_populations = opts.get("num_populations", 5)
+        self.sub_population_size = opts.get("sub_population_size", 10)
+        self.hall_of_fame_size = opts.get("hall_of_fame_size", 5)
+        self.new_node_rate = opts.get("new_node_rate", 0.1)
+        self.new_connection_rate = opts.get("new_connection_rate", 0.1)
+        self.extinction_rate = opts.get("extinction_rate", 0.5)
+        self.mutation_rate = opts.get("mutation_rate", 0.1)
+        self.mutation_size = opts.get("mutation_size", 1.0)
+        self.init_weight_magnitude = opts.get("init_weight_magnitude", 1.0)
+        self.target_fitness = opts.get("target_fitness", 1e20)
+        self.debug_mode = opts.get("debug_mode", False)
+        self.forceExtinctionMode = False
+
+        # Set globals used by Genome mutations:
+        global mutationRate, mutationSize
+        mutationRate = self.mutation_rate
+        mutationSize = self.mutation_size
+
+        N = self.sub_population_size
+        K = self.num_populations
+        self.kmedoids = KMedoids()
+        self.kmedoids.init(K)
+        self.kmedoids.setDistFunction(self.dist)
+
+        self.genes = []
+        self.hallOfFame = []
+        self.bestOfSubPopulation = []
+
+        # Create an initial population:
+        for i in range(N*K):
+            if initGenome is not None:
+                genome = Genome(initGenome)
+            else:
+                genome = Genome()
+            genome.addRandomConnection()
+            genome.mutateWeights(1.0, self.mutation_size)  # burst mutate init weights
+            genome.fitness = -1e20
+            genome.cluster = randi(0, K)
+            self.genes.append(genome)
+        # initialize hall-of-fame
+        for i in range(self.hall_of_fame_size):
+            if initGenome is not None:
+                genome = Genome(initGenome)
+            else:
+                genome = Genome()
+                genome.addRandomConnection()
+                genome.mutateWeights(1.0, self.mutation_size)
+            genome.fitness = -1e20
+            genome.cluster = 0
+            self.hallOfFame.append(genome)
+
+    def sortByFitness(self, gene_list):
+        gene_list.sort(key=lambda g: g.fitness, reverse=True)
+
+    def forceExtinction(self):
+        self.forceExtinctionMode = True
+
+    def resetForceExtinction(self):
+        self.forceExtinctionMode = False
+
+    def applyMutations(self, g):
+        if np.random.rand() < self.new_node_rate:
+            g.addRandomNode()
+        if np.random.rand() < self.new_connection_rate:
+            g.addRandomConnection()
+        g.mutateWeights(self.mutation_rate, self.mutation_size)
+
+    def applyFitnessFuncToList(self, f, geneList):
+        for g in geneList:
+            g.fitness = f(g)
+
+    def getAllGenes(self):
+        return self.genes + self.hallOfFame + self.bestOfSubPopulation
+
+    def applyFitnessFunc(self, f, clusterMode=True):
+        self.applyFitnessFuncToList(f, self.genes)
+        self.applyFitnessFuncToList(f, self.hallOfFame)
+        self.applyFitnessFuncToList(f, self.bestOfSubPopulation)
+        self.filterFitness()
+        combined = self.genes + self.hallOfFame + self.bestOfSubPopulation
+        self.sortByFitness(combined)
+        if clusterMode:
+            self.cluster()
+        # Update hall-of-fame
+        self.hallOfFame = [combined[i].copy() for i in range(self.hall_of_fame_size)]
+        K = self.num_populations
+        self.bestOfSubPopulation = []
+        for j in range(K):
+            for g in combined:
+                if g.cluster == j:
+                    self.bestOfSubPopulation.append(g.copy())
+                    break
+
+    def clipWeights(self, maxWeight_=50.0):
+        for g in self.genes:
+            g.clipWeights(maxWeight_)
+        for g in self.hallOfFame:
+            g.clipWeights(maxWeight_)
+
+    def areWeightsNaN(self):
+        for g in self.genes + self.hallOfFame:
+            if g.areWeightsNaN():
+                return True
+        return False
+
+    def filterFitness(self):
+        epsilon = 1e-10
+        def process(g):
+            fitness = -1e20
+            if g.fitness is not None and not math.isnan(g.fitness):
+                fitness = -abs(g.fitness)
+                fitness = min(fitness, -epsilon)
+            g.fitness = fitness
+        for g in self.genes + self.hallOfFame:
+            process(g)
+
+    def pickRandomIndex(self, genes, cluster=None):
+        totalProb = 0.0
+        slack = 0.01
+        normFitness = []
+        eligible = []
+        for g in genes:
+            if cluster is None or g.cluster == cluster:
+                val = 1.0 / (-g.fitness + slack)
+                normFitness.append(val)
+                eligible.append(g)
+                totalProb += val
+        if not eligible:
+            return None
+        normFitness = [v/totalProb for v in normFitness]
+        x = np.random.rand()
+        for idx, prob in enumerate(normFitness):
+            x -= prob
+            if x <= 0:
+                return idx
+        return len(eligible)-1
+
+    def cluster(self, genePool=None):
+        genePool = self.genes if genePool is None else genePool
+        self.kmedoids.partition(genePool)
+        clusters = self.kmedoids.getCluster()
+        for cluster_idx, indices in enumerate(clusters):
+            for idx in indices:
+                genePool[idx].cluster = cluster_idx
+
+    def evolve(self, mutateWeightsOnly=False):
+        prevGenes = self.genes
+        newGenes = []
+        K = self.num_populations
+        N = self.sub_population_size
+        incrementGenerationCounter()
+        self.kmedoids.partition(prevGenes)
+        clusters = self.kmedoids.getCluster()
+        worstFitness = 1e20
+        worstCluster = -1
+        bestFitness = -1e20
+        bestCluster = -1
+        for i in range(K):
+            if len(clusters[i]) == 0:
+                continue
+            # sort indices by fitness (highest first)
+            indices = clusters[i]
+            sorted_genes = sorted([prevGenes[j] for j in indices], key=lambda g: g.fitness, reverse=True)
+            if sorted_genes[0].fitness < worstFitness:
+                worstFitness = sorted_genes[0].fitness
+                worstCluster = i
+            if sorted_genes[0].fitness >= bestFitness:
+                bestFitness = sorted_genes[0].fitness
+                bestCluster = i
+        extinctionEvent = False
+        if np.random.rand() < self.extinction_rate and not mutateWeightsOnly:
+            extinctionEvent = True
+            if self.debug_mode:
+                print('Crappiest sub-population will be extinct.')
+        if self.forceExtinctionMode and not mutateWeightsOnly:
+            extinctionEvent = True
+            if self.debug_mode:
+                print('Forced extinction.')
+        for i in range(K):
+            for j in range(N):
+                if extinctionEvent and i == worstCluster:
+                    idx_mom = self.pickRandomIndex(prevGenes, bestCluster)
+                    idx_dad = self.pickRandomIndex(prevGenes, bestCluster)
+                else:
+                    idx_mom = self.pickRandomIndex(prevGenes, i)
+                    idx_dad = self.pickRandomIndex(prevGenes, i)
+                try:
+                    mom = prevGenes[idx_mom]
+                    dad = prevGenes[idx_dad]
+                    if mutateWeightsOnly:
+                        baby = mom.crossover(dad)
+                        baby.mutateWeights(self.mutation_rate, self.mutation_size)
+                    else:
+                        baby = mom.crossover(dad)
+                        self.applyMutations(baby)
+                except Exception as err:
+                    if self.debug_mode:
+                        print("Error during crossover:", err)
+                    baby = prevGenes[0].copy()
+                    self.applyMutations(baby)
+                baby.cluster = i
+                newGenes.append(baby)
+        self.genes = newGenes
+        # (Compression step is omitted for brevity.)
     
-    # 2) Build links array
-    # We'll only include links if active[c] == 1
-    links_list = []
-    n_conn = genome.connections.shape[0]
-    for c in range(n_conn):
-        if genome.active[c] == 1:
-            source_idx = int(genome.connections[c, 0])
-            target_idx = int(genome.connections[c, 1])
-            weight_val = float(genome.weights[c])
-            links_list.append({
-                "source": source_idx,
-                "target": target_idx,
-                "weight": weight_val
-            })
-    
-    # 3) Build constraints array
-    # Typically you want input nodes along one line, output nodes along another line, etc.
-    # Suppose the first n_input are type=NODE_INPUT, then 1 bias, then n_output are output.
-    # We'll create x/y alignments like the code does.
-    # For simplicity, we’ll place input + bias near bottom, output near top.
-    width_offsets = []
-    height_offsets = []
-    
-    # input/bias: positions
-    # We'll assume node indices [0..(n_input - 1)] are inputs, index n_input is bias,
-    # then [n_input+1 .. n_input + n_output] are outputs, etc.
-    for i in range(n_input + 1):
-        width_offsets.append({"node": i, "offset": (i + 1) * 80})
-        height_offsets.append({"node": i, "offset": 300})  # y=300 near bottom
+    def printFitness(self):
+        for i, g in enumerate(self.genes):
+            print(f"Genome {i} fitness = {g.fitness}")
+        for i, g in enumerate(self.hallOfFame):
+            print(f"HallOfFamer {i} fitness = {g.fitness}")
+        for i, g in enumerate(self.bestOfSubPopulation):
+            print(f"BestOfSubPopulation {i} fitness = {g.fitness}")
 
-    # output nodes
-    for o in range(n_output):
-        node_idx = n_input + 1 + o
-        width_offsets.append({"node": node_idx, "offset": (o + 1) * 80})
-        height_offsets.append({"node": node_idx, "offset": 60})  # near top
+    def getBestGenome(self, cluster=None):
+        allGenes = self.genes.copy()
+        self.sortByFitness(allGenes)
+        if cluster is None:
+            return allGenes[0]
+        for g in allGenes:
+            if g.cluster == cluster:
+                return g
+        return allGenes[0]
 
-    constraints = [
-        {
-            "type": "alignment",
-            "axis": "y",
-            "offsets": height_offsets
-        },
-        {
-            "type": "alignment",
-            "axis": "x",
-            "offsets": width_offsets
-        }
-    ]
-    
-    graph_obj = {
-        "nodes": node_list,
-        "links": links_list,
-        "constraints": constraints
-    }
-    return graph_obj
-
-
-######################################################
-# DEMO USAGE
-######################################################
-def demo():
-    rng = random.PRNGKey(42)
-
-    # init
-    n_input, n_output = 2, 1
-    g = init_genome(rng, n_input, n_output, init_config="all")
-
-    # fake data
-    x = jnp.array([[0.0,0.0],[0.0,1.0],[1.0,0.0],[1.0,1.0]], dtype=jnp.float32)  # XOR example
-    labels = jnp.array([0.0,1.0,1.0,0.0], dtype=jnp.float32)
-
-    # forward
-    out_before = forward(g, x)
-    print("Output before backprop:\n", out_before)
-
-    # do some backprop
-    rng, _ = random.split(rng)
-    g2 = backprop_genome(rng, g, x, labels, n_steps=100, lr=0.05)
-
-    # forward after
-    out_after = forward(g2, x)
-    print("Output after  backprop:\n", out_after)
-
-
-if __name__ == "__main__":
-    demo()
+    def dist(self, g1, g2):
+        g1.createUnrolledConnections()
+        g2.createUnrolledConnections()
+        coef = {"excess": 10.0, "disjoint": 10.0, "weight": 0.1}
+        nBothActive = 0
+        nDisjoint = 0
+        nExcess = 0
+        weightDiff = 0.0
+        lastIndex1 = -1
+        lastIndex2 = -1
+        total = len(connections)
+        diffVector = [0]*total
+        for i in range(total):
+            c1 = g1.unrolledConnections[i]
+            c2 = g2.unrolledConnections[i]
+            exist1 = c1[IDX_CONNECTION]
+            exist2 = c2[IDX_CONNECTION]
+            active1 = exist1 * c1[IDX_ACTIVE]
+            active2 = exist2 * c2[IDX_ACTIVE]
+            if exist1 == 1:
+                lastIndex1 = i
+            if exist2 == 1:
+                lastIndex2 = i
+            diffVector[i] = 0 if exist1 == exist2 else 1
+            if active1 == 1 and active2 == 1:
+                w1 = c1[IDX_WEIGHT]
+                w2 = c2[IDX_WEIGHT]
+                nBothActive += 1
+                weightDiff += abs(w1 - w2)
+        minIndex = min(lastIndex1 if lastIndex1>=0 else 0, lastIndex2 if lastIndex2>=0 else 0)
+        if nBothActive > 0:
+            weightDiff /= nBothActive
+        for i in range(minIndex+1):
+            nDisjoint += diffVector[i]
+        for i in range(minIndex+1, total):
+            nExcess += diffVector[i]
+        numNodes = max(len(self.getBestGenome().getNodesInUse()), len(self.getBestGenome().getNodesInUse()))
+        distDisjoint = coef["disjoint"] * nDisjoint / (numNodes if numNodes>0 else 1)
+        distExcess = coef["excess"] * nExcess / (numNodes if numNodes>0 else 1)
+        distWeight = coef["weight"] * weightDiff
+        distance = distDisjoint + distExcess + distWeight
+        if math.isnan(distance) or abs(distance) > 100:
+            print("large distance report:")
+            print("distance =", distance)
+        return distance

@@ -1,262 +1,195 @@
-#!/usr/bin/env python3
-# server.py
-import os
-from flask import Flask, request, jsonify, send_from_directory
-from jax import random
+#!/usr/bin/env python
+"""
+This file sets up the Flask server for the NEAT implementation.
+It imports all necessary classes and functions from neat.py and defines API endpoints.
+"""
+
+from flask import Flask, request, jsonify
+import math
+import json
 import jax.numpy as jnp
 
-from dataset import generate_dataset
-
-# Import your neat.py
+# Import everything from neat.py
 from neat import (
-    Genome,
-    init_genome,
-    forward,
-    mutate_genome,
-    crossover,
-    # ... any other functions you need ...
+    init, NEATTrainer, Genome,
+    nInput, nOutput, initConfig,
+    connections, nodes, generationNum
 )
 
 app = Flask(__name__, static_folder='static')
 
-# We'll store a "population" of NEAT Genomes globally:
-global_population = []
-rng = random.PRNGKey(42)
+# Global instances (for simplicity, we allow one instance of each)
+global_trainer = None
 
-@app.route('/')
-def index():
-    """ Serve the index.html file from static/ """
-    return send_from_directory(app.static_folder, 'index.html')
-
-@app.route('/init', methods=['POST'])
-def init_pop():
+@app.route("/init", methods=["POST"])
+def init_network():
     """
-    Initialize a population of NEAT genomes.
-    Expects JSON like: { "n_input": 2, "n_output": 1, "init_config": "all", "pop_size": 10 }
+    Initialize the NEAT network using options provided as JSON.
+    Example JSON:
+    {
+      "nInput": 2,
+      "nOutput": 1,
+      "initConfig": "one",
+      "activations": "minimal"
+    }
     """
-    global global_population, rng
-    req = request.get_json()
-    n_input     = req.get("n_input", 2)
-    n_output    = req.get("n_output", 1)
-    init_config = req.get("init_config", "all")
-    pop_size    = req.get("pop_size", 10)
+    opts = request.get_json() or {}
+    init(opts)
+    return jsonify({"status": "initialized", "nInput": nInput, "nOutput": nOutput, "initConfig": initConfig})
 
-    new_pop = []
-    for i in range(pop_size):
-        rng, key = random.split(rng)
-        g = init_genome(key, n_input, n_output, init_config)
-        new_pop.append(g)
-
-    global_population = new_pop
-    return jsonify({"msg": f"Initialized population of size {pop_size}."})
-
-@app.route('/forward', methods=['POST'])
-def forward_pass():
+@app.route("/network", methods=["GET"])
+def network_api():
     """
-    Forward pass on a single genome from the population.
-    Expects JSON:
-      { "genome_index": 0,
-        "inputs": [[x1, y1], [x2, y2], ...]  // batch
+    Returns current global network parameters.
+    Output JSON structure:
+      {
+         "nInput": <nInput value>,
+         "nOutput": <nOutput value>,
+         "nodes": <list of nodes>,
+         "connections": <list of connections>
       }
-    Returns predicted outputs as a 2D list (batch_size x n_outputs).
     """
-    global global_population
-    req = request.get_json()
-    idx = req.get("genome_index", 0)
-    inputs = jnp.array(req.get("inputs", []), dtype=jnp.float32)  # shape [batch, 2] typically
+    return jsonify({
+        "nInput": nInput,
+        "nOutput": nOutput,
+        "nodes": nodes,
+        "connections": connections
+    })
 
-    if idx < 0 or idx >= len(global_population):
-        return jsonify({"error": "Invalid genome index"}), 400
 
-    outputs = forward(global_population[idx], inputs)
+@app.route("/create_genome", methods=["GET"])
+def create_genome_api():
+    """
+    Create a new Genome.
+    """
+    genome = Genome()
+    genome.addRandomConnection()
+    genome.mutateWeights(1.0, 1.0)
+    return jsonify({"genome": genome.toJSON("new genome")})
+
+@app.route("/create_trainer", methods=["POST"])
+def create_trainer_api():
+    """
+    Create a new NEATTrainer. Options may be provided in JSON.
+    """
+    global global_trainer
+    opts = request.get_json() or {}
+    global_trainer = NEATTrainer(options=opts)
+    return jsonify({"status": "trainer created", "num_genes": len(global_trainer.genes)})
+
+@app.route("/evolve", methods=["POST"])
+def evolve_api():
+    """
+    Perform one evolution step.
+    Optionally, you can provide {"mutateWeightsOnly": true} in the JSON.
+    """
+    global global_trainer
+    if global_trainer is None:
+        return jsonify({"error": "trainer not created"}), 400
+    data = request.get_json() or {}
+    mutateOnly = data.get("mutateWeightsOnly", False)
+    global_trainer.evolve(mutateOnly)
+    return jsonify({"status": "evolution step completed", "generation": generationNum, "num_genes": len(global_trainer.genes)})
+
+@app.route("/best_genome", methods=["GET"])
+def best_genome_api():
+    """
+    Return the best genome (as JSON) from the trainer.
+    """
+    global global_trainer
+    if global_trainer is None:
+        return jsonify({"error": "trainer not created"}), 400
+    best = global_trainer.getBestGenome()
+    return jsonify({"best_genome": best.toJSON("best genome")})
+
+@app.route("/forward", methods=["POST"])
+def forward_api():
+    """
+    Perform a forward pass on a given genome using provided input values.
+    
+    Expected JSON input:
+    {
+      "genome": <genome JSON>,          // optional; if provided, use this genome; otherwise, use the best genome.
+      "input_values": [list of input values]   // optional; if not provided, defaults to 0.5 for each input node.
+    }
+    
+    Returns JSON:
+      { "outputs": [list of outputs] }
+    """
+    data = request.get_json() or {}
+    input_values = data.get("input_values", None)
+    if input_values is not None:
+        input_values = jnp.array(input_values)
+    if "genome" in data:
+        genome_json = data["genome"]
+        genome_obj = Genome()
+        genome_obj.fromJSON(json.dumps(genome_json))
+    else:
+        global global_trainer
+        if global_trainer is None:
+            return jsonify({"error": "trainer not created"}), 400
+        genome_obj = global_trainer.getBestGenome()
+    outputs = genome_obj.forward(input_values=input_values)
     return jsonify({"outputs": outputs.tolist()})
 
-# ... your existing endpoints (forward, mutate, crossover, etc.) ...
-
-@app.route('/backprop', methods=['POST'])
-def backprop_endpoint():
+@app.route("/backward", methods=["POST"])
+def backward_api():
     """
-    JSON: {
-      "genome_index": 0,
-      "inputs": [[0,0],[1,0],...],
-      "labels": [0, 1, ...],
-      "n_steps": 100,
-      "lr": 0.05
+    Compute gradient descent (backpropagation) on the best genome's connection weights.
+    
+    Expected JSON input:
+    {
+      "input_values": [list of input values],   // optional; defaults to 0.5 for each input
+      "target": [list of target output values],   // required; used to compute the squared error loss
+      "nCycles": <number of backprop cycles>,     // optional; defaults to 1
+      "learnRate": <learning rate>                  // optional; defaults to 0.01
     }
-    Returns updated genome index or info.
-    """
-    global global_population, rng
-
-    data = request.get_json()
-    idx = data.get("genome_index", 0)
-    x   = jnp.array(data["inputs"], dtype=jnp.float32)
-    y   = jnp.array(data["labels"], dtype=jnp.float32)
-    steps = data.get("n_steps", 100)
-    lr    = data.get("lr", 0.05)
-
-    if idx < 0 or idx >= len(global_population):
-        return jsonify({"error": "Invalid index"}), 400
-
-    g = global_population[idx]
-
-    rng, subkey = random.split(rng)
-    # run backprop
-    g_new = backprop_genome(subkey, g, x, y, n_steps=steps, lr=lr)
-
-    # store updated genome
-    global_population[idx] = g_new
-
-    # optionally, return some info
-    out_before = forward(g, x)
-    out_after  = forward(g_new, x)
-    return jsonify({
-        "msg": f"Backprop complete on genome {idx}",
-        "before": out_before.tolist(),
-        "after":  out_after.tolist()
-    })
-
-@app.route('/mutate', methods=['POST'])
-def mutate():
-    """
-    Mutate a genome in the population.
-    Expects JSON:
-      { "genome_index": 0,
-        "mutation_rate": 0.2,
-        "mutation_scale": 0.5
+    
+    For each cycle:
+      loss = sum((output - target)^2)
+      new_weight = current_weight - learnRate * gradient
+    
+    Returns JSON:
+      {
+         "loss": <final scalar loss>,
+         "weights": [updated connection weights as a list]
       }
     """
-    global global_population, rng
-    req = request.get_json()
-    idx = req.get("genome_index", 0)
-    mrate = req.get("mutation_rate", 0.2)
-    mscale= req.get("mutation_scale", 0.5)
+    global global_trainer
+    if global_trainer is None:
+        return jsonify({"error": "trainer not created"}), 400
 
-    if idx < 0 or idx >= len(global_population):
-        return jsonify({"error": "Invalid genome index"}), 400
+    data = request.get_json() or {}
+    target = data.get("target", None)
+    if target is None:
+        return jsonify({"error": "target must be provided"}), 400
 
-    rng, key = random.split(rng)
-    mutated = mutate_genome(key, global_population[idx], mrate, mscale)
-    global_population[idx] = mutated
-    return jsonify({"msg": f"Mutated genome {idx}."})
+    input_values = data.get("input_values", None)
+    if input_values is not None:
+        input_values = jnp.array(input_values)
 
-@app.route('/crossover', methods=['POST'])
-def do_crossover():
-    """
-    Crossover between two genomes in population to produce a new child genome.
-    Expects JSON:
-      { "mom_index": 0, "dad_index": 1 }
-    Appends the child to the population, returns child's index.
-    """
-    global global_population, rng
-    req = request.get_json()
-    mom_idx = req.get("mom_index", 0)
-    dad_idx = req.get("dad_index", 0)
+    nCycles = data.get("nCycles", 1)
+    learnRate = data.get("learnRate", 0.01)
 
-    if not (0 <= mom_idx < len(global_population)) or not (0 <= dad_idx < len(global_population)):
-        return jsonify({"error": "Invalid mom/dad index"}), 400
+    def loss_fn(outputs):
+        t = jnp.array(target)
+        return jnp.sum((outputs - t) ** 2)
 
-    rng, key = random.split(rng)
-    child = crossover(key, global_population[mom_idx], global_population[dad_idx])
-    global_population.append(child)
-    child_idx = len(global_population) - 1
+    genome = global_trainer.getBestGenome()
+    for cycle in range(nCycles):
+        loss_val, grad_weights = genome.backward(loss_fn, input_values=input_values)
+        current_weights = jnp.array([c[IDX_WEIGHT] for c in genome.connections])
+        new_weights = current_weights - learnRate * grad_weights
+        new_weights_list = new_weights.tolist()
+        for index, w in enumerate(new_weights_list):
+            genome.connections[index][IDX_WEIGHT] = w
 
     return jsonify({
-        "msg": f"Created child at index {child_idx}",
-        "child_index": child_idx
+        "loss": float(loss_val),
+        "weights": [c[IDX_WEIGHT] for c in genome.connections]
     })
 
-# Example "evaluate" endpoint (if you had a fitness function):
-@app.route('/evaluate', methods=['POST'])
-def evaluate():
-    """
-    Very simple placeholder if you want to compute fitness for each genome.
-    Expects JSON with some data, e.g. { "input_data": [[x,y],...], "labels": [...], ... }
-    Then it returns a list of fitnesses for all genomes.
-    """
-    global global_population
-    req = request.get_json()
-    input_data = jnp.array(req.get("input_data", []), dtype=jnp.float32)
-    labels     = jnp.array(req.get("labels", []), dtype=jnp.float32)
-    # You'd do a real loop or vectorized approach:
-    fitnesses = []
-    for g in global_population:
-        preds = forward(g, input_data)  # shape [batch, 1] for example
-        # compute error vs. labels => fitness
-        error = jnp.mean((preds[:,0] - labels)**2)
-        fitness = float(-error)  # NEAT typically wants higher = better
-        fitnesses.append(fitness)
-    # You might store them or do something else
-    return jsonify({"fitnesses": fitnesses})
-
-
-@app.route("/generate_data", methods=["POST"])
-def generate_data():
-    """
-    JSON body example:
-      {
-        "type": "xor",  // or "spiral", "gaussian", "circle"
-        "train_size": 200,
-        "test_size": 100,
-        "noise": 0.5
-      }
-    Returns JSON like:
-      {
-        "train_x": [[x1,y1], [x2,y2], ...],
-        "train_label": [l1,l2,...],
-        "test_x": [...],
-        "test_label": [...]
-      }
-    """
-    req = request.get_json()
-    data_type = req.get("type", "circle")
-    train_size= req.get("train_size", 200)
-    test_size = req.get("test_size", 100)
-    noise     = req.get("noise", 0.5)
-
-    # generate train
-    x_train, y_train = generate_dataset(data_type, train_size, noise)
-    # generate test
-    x_test, y_test   = generate_dataset(data_type, test_size, noise)
-
-    # Convert to lists
-    x_train_list = x_train.tolist()
-    y_train_list = y_train.tolist()
-    x_test_list  = x_test.tolist()
-    y_test_list  = y_test.tolist()
-
-    return jsonify({
-      "train_x": x_train_list,
-      "train_label": y_train_list,
-      "test_x": x_test_list,
-      "test_label": y_test_list
-    })
-
-@app.route('/graph', methods=['POST'])
-def get_graph():
-    """
-    Return a JSON for the genome's graph, usable by RenderGraph.drawGraph().
-    Expects JSON:
-      {
-        "genome_index": 0,
-        "n_input": 2,
-        "n_output": 1
-      }
-    """
-    global global_population
-    req = request.get_json()
-    idx = req.get("genome_index", 0)
-    n_input = req.get("n_input", 2)
-    n_output= req.get("n_output", 1)
-
-    if idx < 0 or idx >= len(global_population):
-        return jsonify({"error": "Invalid genome index"}), 400
-
-    g = global_population[idx]
-    graph_json = genome_to_rendergraph(g, n_input, n_output)
-
-    return jsonify({"graph": graph_json})
-
-
-if __name__ == "__main__":
-    # By default, runs on localhost:5000
-    app.run(port=5000, debug=False)
+if __name__ == '__main__':
+    # Optionally initialize the network with default settings.
+    init({"nInput": 2, "nOutput": 1, "initConfig": "one", "activations": "minimal"})
+    app.run(host="0.0.0.0", port=5000, debug=True)
