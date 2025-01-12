@@ -1,0 +1,97 @@
+# Python byte-code and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Django/Flask/Other framework stuff (adjust as needed)
+instance/
+.webassets-cache
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# IPython / Jupyter Notebook
+.ipynb_checkpoints
+
+# Virtual environment (if stored in project directory)
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+
+# Pyre type checker
+.pyre/
+
+# JavaScript and Node.js
+node_modules/
+bower_components/
+
+# Build output directories
+dist/
+build/
+
+# Sass cache
+.sass-cache/
+
+# Log files
+*.log
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary files
+*.swp
+*.swo
