@@ -109,14 +109,13 @@ def evolve_api():
 
 @app.route("/best_genome", methods=["GET"])
 def best_genome_api():
-    """
-    Return the best genome (as JSON) from the trainer.
-    """
+    cluster = request.args.get("cluster", None)
     global global_trainer
     if global_trainer is None:
         return jsonify({"error": "trainer not created"}), 400
-    best = global_trainer.getBestGenome()
-    return jsonify({"best_genome": best.toJSON("best genome")})
+    best_genome = global_trainer.get_best_genome(cluster=cluster)
+    return jsonify({"best_genome": best_genome.to_json()})
+
 
 @app.route("/apply_fitness", methods=["POST"])
 def apply_fitness():
