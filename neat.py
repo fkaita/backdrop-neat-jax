@@ -436,44 +436,34 @@ class Genome:
         return data.get("description", "")
 
     def forward(self, input_values=None, weights=None):
-        """
-        Perform forward propagation on a batch of input points.
-
-        Parameters:
-        input_values (optional): A 2D JAX array of shape (batch_size, nInput), where each row is a point.
-                                If None, defaults to a single point with 0.5 for each input node.
-        weights (optional): A JAX array of connection weights. Defaults to self.connections weights.
-
-        Returns:
-        A JAX array of shape (batch_size, nOutput), with outputs for each input point in the batch.
-        """
         nNodes = len(nodes)
         nodes_array = jnp.array(nodes)
-        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT], dtype=jnp.int32)
-        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS], dtype=jnp.int32)
-        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT], dtype=jnp.int32)
+        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT])
+        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
+        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
 
         if weights is None:
             weights = jnp.array([c[IDX_WEIGHT] for c in self.connections])
         active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections])
-        conn_idx_list = [c[IDX_CONNECTION] for c in self.connections]
+        
+        # Convert `conn_idx_list` to a JAX array
+        conn_idx_list = jnp.array([c[IDX_CONNECTION] for c in self.connections])
         global_conns = jnp.array(connections)
+        
+        # Advanced indexing now uses arrays
         selected = global_conns[conn_idx_list]
         from_indices = selected[:, 0].astype(jnp.int32)
         to_indices = selected[:, 1].astype(jnp.int32)
 
-        # Default input values if none provided
         if input_values is None:
             input_values = jnp.array([[0.5] * nInput])
 
         batch_size = input_values.shape[0]
 
-        # Initialize node values for the batch
         node_vals = jnp.zeros((batch_size, nNodes))
         node_vals = node_vals.at[:, input_indices].set(input_values)
         node_vals = node_vals.at[:, bias_indices].set(1.0)
 
-        # Define body function for batch processing
         def body_fn(t, nv):
             contrib = weights * active_mask * nv[:, from_indices]
             summed = jax.vmap(lambda c: jax.ops.segment_sum(c, to_indices, nNodes))(contrib)
@@ -482,10 +472,8 @@ class Genome:
                 jnp.arange(nNodes), nv_row))(summed)
             return new_nv
 
-        # Perform forward propagation for MAX_TICK iterations
         final_vals = jax.lax.fori_loop(0, MAX_TICK, body_fn, node_vals)
         return final_vals[:, output_indices]
-
 
 
     def backward(self, loss_fn, input_values=None):
