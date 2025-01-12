@@ -438,42 +438,37 @@ class Genome:
     def forward(self, input_values=None, weights=None):
         nNodes = len(nodes)
         nodes_array = jnp.array(nodes)
-        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT])
-        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
-        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
+        input_indices = jnp.array([int(i) for i, nt in enumerate(nodes) if nt == NODE_INPUT])
+        bias_indices = jnp.array([int(i) for i, nt in enumerate(nodes) if nt == NODE_BIAS])
+        output_indices = jnp.array([int(i) for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
 
         if weights is None:
             weights = jnp.array([c[IDX_WEIGHT] for c in self.connections])
         active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections])
-        
-        # Convert `conn_idx_list` to a JAX array
-        conn_idx_list = jnp.array([c[IDX_CONNECTION] for c in self.connections])
-        global_conns = jnp.array(connections)
-        
-        # Advanced indexing now uses arrays
+        conn_idx_list = jnp.array([int(c[IDX_CONNECTION]) for c in self.connections])
+        global_conns = jnp.array(connections, dtype=jnp.int32)
         selected = global_conns[conn_idx_list]
         from_indices = selected[:, 0].astype(jnp.int32)
         to_indices = selected[:, 1].astype(jnp.int32)
 
         if input_values is None:
-            input_values = jnp.array([[0.5] * nInput])
+            input_values = jnp.array([0.5] * nInput)
 
-        batch_size = input_values.shape[0]
-
-        node_vals = jnp.zeros((batch_size, nNodes))
-        node_vals = node_vals.at[:, input_indices].set(input_values)
-        node_vals = node_vals.at[:, bias_indices].set(1.0)
+        node_vals = jnp.zeros(nNodes)
+        node_vals = node_vals.at[input_indices].set(input_values)
+        node_vals = node_vals.at[bias_indices].set(1.0)
 
         def body_fn(t, nv):
-            contrib = weights * active_mask * nv[:, from_indices]
-            summed = jax.vmap(lambda c: jax.ops.segment_sum(c, to_indices, nNodes))(contrib)
-            new_nv = jax.vmap(lambda nv_row: jax.vmap(
-                lambda i, x: GraphOps.sigmoid(x) if nodes_array[i] == NODE_SIGMOID else x)(
-                jnp.arange(nNodes), nv_row))(summed)
+            contrib = weights * active_mask * nv[from_indices]
+            summed = jax.ops.segment_sum(contrib, to_indices, nNodes)
+            new_nv = jax.vmap(lambda i, x: GraphOps.sigmoid(x) if nodes_array[i] == NODE_SIGMOID else x)(
+                jnp.arange(nNodes), summed
+            )
             return new_nv
 
         final_vals = jax.lax.fori_loop(0, MAX_TICK, body_fn, node_vals)
-        return final_vals[:, output_indices]
+        return final_vals[output_indices]
+
 
 
     def backward(self, loss_fn, input_values=None):
