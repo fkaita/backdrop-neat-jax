@@ -99,29 +99,53 @@ class TestNeatAPI(unittest.TestCase):
 
     def test_forward(self):
         self.test_create_trainer()  # Ensure a trainer is created
-        payload = {
-            "input_values": [0.5, 0.3]
-        }
-        response = self.app.post("/forward", data=json.dumps(payload), content_type="application/json")
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
-        self.assertIn("outputs", data)
-        self.assertIsInstance(data["outputs"], list)
+
+        # Define test cases for a batch of input points
+        test_cases = [
+            {"input_values": [[0.5, 0.3], [0.1, 0.9]]},  # Two points
+            {"input_values": [[0.0, 0.0], [1.0, 1.0]]},  # Extreme values
+            {"input_values": [[10.0, -10.0], [5.0, -5.0], [0.5, 0.3]]},  # Mixed values
+        ]
+
+        for idx, case in enumerate(test_cases):
+            with self.subTest(f"Test case {idx + 1}: {case['input_values']}"):
+                response = self.app.post("/forward", data=json.dumps(case), content_type="application/json")
+                self.log_error(response, f"test_forward_case_{idx + 1}")  # Log errors if any
+                self.assertEqual(response.status_code, 200)
+                data = json.loads(response.data)
+                self.assertIn("outputs", data)
+                self.assertIsInstance(data["outputs"], list)
+                self.assertEqual(len(data["outputs"]), len(case["input_values"]))  # Ensure batch size matches
 
     def test_backward(self):
         self.test_create_trainer()  # Ensure a trainer is created
-        payload = {
-            "input_values": [0.5, 0.3],
-            "target": [1.0],
-            "nCycles": 10,
-            "learnRate": 0.01
-        }
-        response = self.app.post("/backward", data=json.dumps(payload), content_type="application/json")
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
-        self.assertIn("loss", data)
-        self.assertIn("weights", data)
-        self.assertIsInstance(data["weights"], list)
+
+        # Define test cases for a batch of input points with corresponding targets
+        test_cases = [
+            {
+                "input_values": [[0.5, 0.3], [0.1, 0.9]],
+                "target": [[1.0], [0.0]],
+                "nCycles": 10,
+                "learnRate": 0.01,
+            },
+            {
+                "input_values": [[0.0, 0.0], [1.0, 1.0]],
+                "target": [[0.0], [1.0]],
+                "nCycles": 5,
+                "learnRate": 0.05,
+            },
+        ]
+
+        for idx, case in enumerate(test_cases):
+            with self.subTest(f"Test case {idx + 1}: {case['input_values']} -> {case['target']}"):
+                response = self.app.post("/backward", data=json.dumps(case), content_type="application/json")
+                self.log_error(response, f"test_backward_case_{idx + 1}")  # Log errors if any
+                self.assertEqual(response.status_code, 200)
+                data = json.loads(response.data)
+                self.assertIn("loss", data)
+                self.assertIn("weights", data)
+                self.assertIsInstance(data["weights"], list)
+
 
 if __name__ == "__main__":
     unittest.main()

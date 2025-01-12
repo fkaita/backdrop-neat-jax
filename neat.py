@@ -436,59 +436,56 @@ class Genome:
         return data.get("description", "")
 
     def forward(self, input_values=None, weights=None):
+        """
+        Perform forward propagation on a batch of input points.
+
+        Parameters:
+        input_values (optional): A 2D JAX array of shape (batch_size, nInput), where each row is a point.
+                                If None, defaults to a single point with 0.5 for each input node.
+        weights (optional): A JAX array of connection weights. Defaults to self.connections weights.
+
+        Returns:
+        A JAX array of shape (batch_size, nOutput), with outputs for each input point in the batch.
+        """
         nNodes = len(nodes)
         nodes_array = jnp.array(nodes)
-        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT])
-        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS])
-        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT])
+        input_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_INPUT], dtype=jnp.int32)
+        bias_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_BIAS], dtype=jnp.int32)
+        output_indices = jnp.array([i for i, nt in enumerate(nodes) if nt == NODE_OUTPUT], dtype=jnp.int32)
 
         if weights is None:
-            weights = jnp.array([c[IDX_WEIGHT] for c in self.connections], dtype=jnp.float32)
-        active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections], dtype=jnp.int32)
-        conn_idx_list = jnp.array([c[IDX_CONNECTION] for c in self.connections], dtype=jnp.int32)
+            weights = jnp.array([c[IDX_WEIGHT] for c in self.connections])
+        active_mask = jnp.array([c[IDX_ACTIVE] for c in self.connections])
+        conn_idx_list = [c[IDX_CONNECTION] for c in self.connections]
         global_conns = jnp.array(connections)
-
         selected = global_conns[conn_idx_list]
-        if selected.ndim == 1:
-            selected = selected.reshape(-1, 2)
-
         from_indices = selected[:, 0].astype(jnp.int32)
         to_indices = selected[:, 1].astype(jnp.int32)
 
+        # Default input values if none provided
         if input_values is None:
-            input_values = jnp.array([0.5] * nInput, dtype=jnp.float32)
+            input_values = jnp.array([[0.5] * nInput])
 
-        node_vals = jnp.zeros(nNodes, dtype=jnp.float32)
-        node_vals = node_vals.at[input_indices].set(input_values)
-        node_vals = node_vals.at[bias_indices].set(1.0)
+        batch_size = input_values.shape[0]
 
+        # Initialize node values for the batch
+        node_vals = jnp.zeros((batch_size, nNodes))
+        node_vals = node_vals.at[:, input_indices].set(input_values)
+        node_vals = node_vals.at[:, bias_indices].set(1.0)
+
+        # Define body function for batch processing
         def body_fn(t, nv):
-            contrib = weights * active_mask * nv[from_indices]
-            summed = jax.numpy.segment_sum(contrib, to_indices, nNodes)
+            contrib = weights * active_mask * nv[:, from_indices]
+            summed = jax.vmap(lambda c: jax.ops.segment_sum(c, to_indices, nNodes))(contrib)
+            new_nv = jax.vmap(lambda nv_row: jax.vmap(
+                lambda i, x: GraphOps.sigmoid(x) if nodes_array[i] == NODE_SIGMOID else x)(
+                jnp.arange(nNodes), nv_row))(summed)
+            return new_nv
 
-            def apply_activation(i, x):
-                nt = nodes_array[i]
-                if nt == NODE_SIGMOID:
-                    return GraphOps.sigmoid(x)
-                elif nt == NODE_TANH:
-                    return GraphOps.tanh(x)
-                elif nt == NODE_RELU:
-                    return GraphOps.relu(x)
-                elif nt == NODE_GAUSSIAN:
-                    return GraphOps.gaussian(x)
-                elif nt == NODE_SIN:
-                    return GraphOps.sin(x)
-                elif nt == NODE_MULT:
-                    return GraphOps.mul(x, x)
-                elif nt == NODE_ADD:
-                    return GraphOps.add(x, x)
-                else:
-                    return x
-
-            return jax.vmap(apply_activation)(jnp.arange(nNodes), summed)
-
+        # Perform forward propagation for MAX_TICK iterations
         final_vals = jax.lax.fori_loop(0, MAX_TICK, body_fn, node_vals)
-        return final_vals[output_indices]
+        return final_vals[:, output_indices]
+
 
 
     def backward(self, loss_fn, input_values=None):
