@@ -4,7 +4,7 @@ This file sets up the Flask server for the NEAT implementation.
 It imports all necessary classes and functions from neat.py and defines API endpoints.
 """
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, send_from_directory
 import math
 import json
 import jax.numpy as jnp
@@ -23,7 +23,7 @@ global_trainer = None
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return send_from_directory("static", "index.html")
 
 @app.route("/init", methods=["POST"])
 def init_network():
