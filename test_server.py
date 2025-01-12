@@ -28,6 +28,17 @@ class TestNeatAPI(unittest.TestCase):
             }
             logging.error(json.dumps(error_message, indent=4))
 
+    def log_result(self, response, test_name, expected_status=200):
+        """Logs the test result and error details if applicable."""
+        if response.status_code == expected_status:
+            logging.info(f"{test_name}: PASSED")
+        else:
+            logging.error(
+                f"{test_name}: FAILED\n"
+                f"Status Code: {response.status_code}\n"
+                f"Response Data: {response.data.decode('utf-8')}"
+            )
+
     def test_index(self):
         response = self.app.get("/")
         self.assertEqual(response.status_code, 200)
