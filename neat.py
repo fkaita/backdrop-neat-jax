@@ -449,6 +449,9 @@ class Genome:
         global_conns = jnp.array(connections)
 
         selected = global_conns[conn_idx_list]
+        if selected.ndim == 1:
+            selected = selected.reshape(-1, 2)
+
         from_indices = selected[:, 0].astype(jnp.int32)
         to_indices = selected[:, 1].astype(jnp.int32)
 
