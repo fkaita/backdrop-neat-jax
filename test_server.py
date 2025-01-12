@@ -1,12 +1,32 @@
 import unittest
 import json
+import logging
 from server import app
+
+# Configure logging to export errors
+logging.basicConfig(
+    filename="test_errors.log",
+    filemode="w",
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.ERROR
+)
+
 
 class TestNeatAPI(unittest.TestCase):
 
     def setUp(self):
         self.app = app.test_client()
         self.app.testing = True
+
+    def log_error(self, response, test_name):
+        """Logs the error details if a test fails."""
+        if response.status_code != 200:
+            error_message = {
+                "test_name": test_name,
+                "status_code": response.status_code,
+                "response_data": response.data.decode("utf-8"),
+            }
+            logging.error(json.dumps(error_message, indent=4))
 
     def test_index(self):
         response = self.app.get("/")
