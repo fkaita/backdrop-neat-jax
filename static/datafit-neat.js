@@ -499,34 +499,26 @@ var fitnessFunc = async function (genome, _backpropMode, _nCycles) {
 };
 
 function buildPredictionList(pList, thedata, thelabel, g, quantisation_) {
-  "use strict";
-  var i, n, y;
-  var output;
-  var acc = 0;
-  var quantisation = (typeof quantisation_ === "undefined") ? false : quantisation_;
-  n = particleList.length;
+  const quantisation = quantisation_ || false;
+  let acc = 0;
+  const n = particleList.length;
 
-  // Setup model and forward propagation
-  // g.setupModel(n);
-  g.setInput(thedata);
+  g.setInput(thedata); // Set the input values.
 
-  return g.forward().then(() => {
-    output = g.getOutput();
-
-    for (i = 0; i < n; i++) {
-      y = output[i];
+  return g.forward().then(output => {
+    for (let i = 0; i < n; i++) {
+      const y = output[i];
       if (!quantisation) {
-        pList[i] = (y > 0.5) ? 1.0 : 0.0;
+        pList[i] = y > 0.5 ? 1.0 : 0.0;
         acc += Math.round(y) === thelabel.get(i, 0) ? 1 : 0;
       } else {
         pList[i] = y;
       }
     }
-
-    acc /= n;
-    return acc;
+    return acc / n; // Return accuracy.
   });
 }
+
 
 
 function draw() {

@@ -103,22 +103,24 @@ function GenomeWrapper(genomeData) {
 }
 
 GenomeWrapper.prototype.getNodesInUse = function() {
-  // Fetch the list of nodes in use. The backend should already return this data.
-  return this.data.nodes.filter((node, index) => {
-    // Check if any active connection involves this node.
-    return this.data.connections.some(conn => {
-      return conn.active && (conn.from === index || conn.to === index);
-    });
+  const nodesInUse = new Set();
+  this.connections.forEach(conn => {
+    if (conn.active) {
+      nodesInUse.add(conn.from);
+      nodesInUse.add(conn.to);
+    }
   });
+  return Array.from(nodesInUse);
 };
 
+
 GenomeWrapper.prototype.setInput = function(inputData) {
-  // Set input data to be used for forward propagation.
   if (!Array.isArray(inputData)) {
     throw new Error("Input data must be an array.");
   }
-  this.inputData = inputData; // Store the input data for use in forward propagation.
+  this.inputValues = inputData;
 };
+
 
 
 Object.defineProperty(GenomeWrapper.prototype, "connections", {
@@ -141,21 +143,18 @@ GenomeWrapper.prototype.copyFrom = function(otherGenomeWrapper) {
 //   // If backend initialization is required, trigger it here.
 // };
 
-GenomeWrapper.prototype.forward = function(graph) {
-  // Perform forward propagation via the backend.
-  return fetch("/forward", {
+GenomeWrapper.prototype.forward = async function() {
+  if (!this.inputValues) {
+    throw new Error("Input values not set. Call setInput before forward.");
+  }
+  const response = await fetch("/forward", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      genome: this.data,
-      input_values: this.inputData // Use input data set earlier
-    })
-  })
-    .then(response => response.json())
-    .then(data => {
-      this.output = data.outputs; // Store the output for getOutput()
-      return data.outputs;
-    });
+    body: JSON.stringify({ genome: this.data, input_values: this.inputValues })
+  });
+  const result = await response.json();
+  this.outputValues = result.outputs; // Store the outputs for further use.
+  return this.outputValues;
 };
 
 GenomeWrapper.prototype.getOutput = function() {
