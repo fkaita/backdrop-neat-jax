@@ -106,6 +106,34 @@ def best_genome_api():
     best = global_trainer.getBestGenome()
     return jsonify({"best_genome": best.toJSON("best genome")})
 
+@app.route("/apply_fitness", methods=["POST"])
+def apply_fitness():
+    """
+    Apply a fitness function configuration to the trainer.
+    Example JSON input:
+    {
+      "fitness_config": "<serialized fitness function>",
+      "cluster_mode": true
+    }
+    """
+    global global_trainer
+    if global_trainer is None:
+        return jsonify({"error": "trainer not created"}), 400
+
+    data = request.get_json() or {}
+    fitness_config = data.get("fitness_config", None)
+    cluster_mode = data.get("cluster_mode", True)
+
+    if not fitness_config:
+        return jsonify({"error": "fitness configuration is required"}), 400
+
+    # Assume fitness_config is a stringified function or some configuration to apply.
+    # If needed, parse or execute it here.
+
+    global_trainer.applyFitnessFunc(fitness_config, cluster_mode)
+    return jsonify({"status": "fitness function applied"})
+
+
 @app.route("/forward", methods=["POST"])
 def forward_api():
     """
